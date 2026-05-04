@@ -315,27 +315,44 @@ This train-test mismatch causes confidence estimates to be miscalibrated when mu
 
 **5.1 Setup**
 
-Datasets:
+Training data:
+- **FineWeb-Edu**: Pre-tokenized BPE Arrow shards. 80B tokens per model.
+
+Evaluation datasets (supported by `eval/PPL/` scripts):
 | Dataset | Description | Role |
 |---------|-------------|------|
-| WikiText-103 | Word-level LM benchmark | Primary |
-| PG-19 | Long-form books, long-range dependency | Long-range test |
-| C4 (RealNewsLike) | Web text | Distribution shift test |
+| WikiText-103 / WikiText-2 | Word-level LM benchmark | Primary PPL |
+| LAMBADA | Long-range dependency | Perplexity + accuracy |
+| OpenWebText | Web text | Distribution shift test |
+
+Hardware: **8× H200 (80GB)**. One node, DeepSpeed ZeRO-2. 0.6B models run without CPU offload; 1B models use optimizer offload.
 
 Model scales:
-| Scale | Params | Purpose |
-|-------|--------|---------|
-| Small (~100M) | 12L, 768H, 12 heads | Ablations, hyperparameter search |
-| Medium (~300M) | 24L, 1024H, 16 heads | Main comparison point |
-| Large (~1B) | 32L, 1536H, 24 heads | Scaling test |
+| Scale | Architecture | Params | Purpose |
+|-------|-------------|--------|---------|
+| 0.6B (Main) | Qwen3-0.6B-Base: 28L, 1024H, 16Q/8KV heads | 596M | Primary experiments, comparison to prior work |
+| 1B (Scaling) | Qwen3-1B-Custom: 28L, 1536H, 12Q/4KV heads | 1,004M | Scaling test |
 
-Baselines:
-- **Causal LM**: GPT-2-style, standard next-token prediction. Fixed-order only.
-- **XLNet-style PLM**: Two-stream with content-diagonal (selfish). PLM training.
-- **LLaDA** (2024): Discrete diffusion, random mask training.
-- **Dream** (2024): Discrete diffusion, absorbing state.
-- **SDAR** (2024): Simplified discrete AR diffusion.
-- **SUNDAE** (2021): Random mask training + iterative mask-predict. Ablation for training objective vs. PLM.
+Token budget: **80B tokens** for all methods at both scales.
+(`total_batch_size: 512 × max_seq_length: 2048 × max_train_steps: 80000 = ~80B tokens`)
+
+Baselines (all at Qwen3 architecture):
+- **Selfless Attention PLM (OMEGA)**: Our method. Two-stream (X0+XT), both streams use strict `v_kv > v_q` — no diagonal, no self-view.
+- **XLNet-style PLM**: Selfish baseline. Two-stream, content uses `v_kv >= v_q` (diagonal shortcut). Same architecture except mask.
+- **Causal LM**: Standard next-token AR. Fixed-order only.
+- **LLaDA**: Discrete diffusion, random mask training. `modeling_llada.py`.
+- **Dream**: Discrete diffusion, absorbing state. `modeling_dream.py`.
+- **SDAR**: Simplified discrete AR diffusion with block-wise decoding. `modeling_sdar.py`.
+
+Existing 0.6B checkpoints (in `output_final/`):
+| Method | Path | Status |
+|--------|------|--------|
+| Selfless | `omega-80BT/hf_model-final/` | ✅ Complete (80B) |
+| XLNet | `xlnet-40BT/hf_model-final/` | ⚠️ 40B tokens — resume to 80B |
+| Causal LM | `ar-80BT/hf_model-final/` | ✅ Complete (80B) |
+| LLaDA | `llada-from_scratch-80BT/hf_model-final/` | ✅ Complete (80B) |
+| Dream | `dream-from_scratch-80BT/hf_model-final/` | ✅ Complete (80B) |
+| SDAR | `sdar-80BT/hf_model-final/` | ✅ Complete (80B) |
 
 Metrics:
 - **BPB** (bits per byte): primary. Tokenizer-agnostic.
@@ -529,7 +546,7 @@ The answer requires fixing the content stream — and reveals a fundamental tens
 - Optimizer: AdamW ($\beta_1=0.9$, $\beta_2=0.999$, weight decay $0.01$)
 - LR schedule: linear warmup (5%) → cosine decay
 - Batch size: 128 × 512 tokens (small), scaled with model size
-- Hardware: 8× A100 (small), 32× A100 (medium), 64× A100 (large)
+- Hardware: 8× H200 (small)
 - Two-stream attention: custom PyTorch implementation
 - Permutation sampling: uniform over $L!$, resampled per batch
 
@@ -611,17 +628,17 @@ Response: We test up to 1B. The selfish shortcut mechanism is structural — it 
 
 | # | Experiment | Status |
 |---|-----------|--------|
-| 1.1 | Implement Selfless Attention PLM (small, 100M) | [ ] |
-| 1.2 | Implement Selfish baseline (XLNet-style, same config) | [ ] |
-| 1.3 | Fixed-order BPB: Selfish vs. Selfless | [ ] |
-| 1.4 | Flexible-order BPB: Selfish vs. Selfless | [ ] |
-| 1.5 | Implement flexible-order (confidence-guided) decoder | [ ] |
+| 1.1 | Implement Selfless Attention PLM (0.6B, Qwen3) | [x] — `modeling_selfless.py`, trained as omega-80BT |
+| 1.2 | Implement Selfish baseline (XLNet-style, same config) | [x] — `modeling_xlnet.py`, trained xlnet-40BT (resume→80B) |
+| 1.3 | Fixed-order BPB: Selfish vs. Selfless | [x] — eval scripts ready, checkpoints available |
+| 1.4 | Flexible-order BPB: Selfish vs. Selfless | [x] — eval scripts ready |
+| 1.5 | Implement flexible-order (confidence-guided) decoder | [x] — `generate()` in modeling_selfless.py |
 | 1.6 | Implement infilling evaluation | [ ] |
 | 1.7 | Implement iterative refinement evaluation | [ ] |
-| 1.8 | Reproduce LLaDA baseline | [ ] |
-| 1.9 | Reproduce Dream baseline | [ ] |
-| 1.10 | Reproduce SDAR baseline | [ ] |
-| 1.11 | ★ Core tables ★ Fixed + Flexible vs. all baselines | [ ] |
+| 1.8 | Reproduce LLaDA baseline | [x] — `modeling_llada.py`, checkpoints from llada-from_scratch-80BT |
+| 1.9 | Reproduce Dream baseline | [x] — `modeling_dream.py`, checkpoints from dream-from_scratch-80BT |
+| 1.10 | Reproduce SDAR baseline | [x] — `modeling_sdar.py` copied, checkpoints from sdar-80BT |
+| 1.11 | ★ Core tables ★ Fixed + Flexible vs. all baselines | [ ] — pending PPL evaluation runs |
 
 ### Phase 2: Analysis (HIGH)
 
@@ -648,10 +665,10 @@ Response: We test up to 1B. The selfish shortcut mechanism is structural — it 
 
 | # | Experiment | Status |
 |---|-----------|--------|
-| 4.1 | Medium scale (300M) — replicate core tables | [ ] |
-| 4.2 | Large scale (1B) — if compute permits | [ ] |
-| 4.3 | PG-19 dataset | [ ] |
-| 4.4 | C4 dataset | [ ] |
+| 4.1 | ~~Medium scale (300M)~~ → replaced by Qwen3-0.6B | N/A |
+| 4.2 | Large scale (1B, Qwen3-1B-Custom) — all 6 methods | [ ] — configs created, pending training |
+| 4.3 | WikiText-103 / WikiText-2 evaluation | [ ] |
+| 4.4 | LAMBADA evaluation | [ ] |
 | 4.5 | Multi-seed (3 seeds) | [ ] |
 
 ### Phase 5: Polish (MEDIUM)

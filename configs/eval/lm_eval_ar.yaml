@@ -1,0 +1,7 @@
+experiment:
+  project: "ar"
+
+max_len: 2048
+
+model:
+  model_path: "output_final/ar-80BT/hf_model-final" 

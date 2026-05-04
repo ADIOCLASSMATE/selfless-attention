@@ -1,0 +1,8 @@
+.pipeline
+.claude
+.sii
+.venv
+output*
+public
+__pycache__
+*.log

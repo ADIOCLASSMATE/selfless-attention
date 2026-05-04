@@ -1,0 +1,17 @@
+experiment:
+  project: "dream"
+
+max_len: 2048
+mc_num: 32
+batch_size: 16
+output_path: "./output_eval_final"
+
+model:
+  model_path: "output_final/dream-from_scratch-80BT/hf_model-final" 
+  attention_task: random
+  use_flex_attention: true
+
+training:
+  use_gradient_checkpointing: false
+  from_scratch: false
+  prompt_task: random

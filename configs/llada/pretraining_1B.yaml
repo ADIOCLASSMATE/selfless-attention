@@ -1,6 +1,7 @@
 experiment:
-    project: "llada-1B-80BT"
+    project: "llada-1B-50BT"
     name: "llada"
+    wandb_project: "selfless-attention"
     output_dir: "output_final"
     save_every: 100
     eval_every: 100
@@ -58,7 +59,7 @@ training:
     enable_tf32: false
     seed: 42
     dataloader_workers: 8
-    max_train_steps: 80000
+    max_train_steps: 50000
     max_grad_norm: 1.0
     ar_ratio: -1.0
     mc_samples: 16

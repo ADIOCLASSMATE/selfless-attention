@@ -1,21 +1,20 @@
 experiment:
-    project: "dream-1B-50BT"
-    name: "dream"
+    project: "xlnet-0.6B-50BT"
+    name: "xlnet"
     wandb_project: "selfless-attention"
-    output_dir: "output_final"
+    output_dir: "output"
     save_every: 100
     eval_every: 100
     generate_every: 10000
     log_every: 10
     log_grad_norm_every: 100
-    checkpoints_total_limit: 100
-    save_hfmodel_every: 100
+    checkpoints_total_limit: 200
+    save_hfmodel_every: 10000
     val_every: 100
     resume_from_checkpoint: none
 
 model:
-    model_path: "public/models/Qwen/Qwen3-1B-Custom"
-    ckpt_path: ""
+    model_path: "public/models/Qwen/Qwen3-0.6B-Base"
     attention_task: "random"
     loss_task: "likelihood"
     mask_id: -1 # we will replace this id in the training script
@@ -53,7 +52,7 @@ lr_scheduler:
         min_lr_scale: 0.01
 
 training:
-    batch_size: 64
+    batch_size: 16
     total_batch_size: 512
     mixed_precision: "bf16"
     enable_tf32: false
@@ -63,6 +62,6 @@ training:
     max_grad_norm: 1.0
     ar_ratio: -1.0
     mc_samples: 16
-    use_gradient_checkpointing: true
+    use_gradient_checkpointing: false
     step_scheduler_with_optimizer: false
     from_scratch: true

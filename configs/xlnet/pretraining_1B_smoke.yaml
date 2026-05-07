@@ -1,6 +1,7 @@
 experiment:
-    project: "xlnet-1B-80BT-smoke"
+    project: "xlnet-1B-50BT-smoke"
     name: "xlnet"
+    wandb_project: "selfless-attention"
     output_dir: "output"
     save_every: 100
     eval_every: 100
@@ -57,7 +58,7 @@ training:
     enable_tf32: false
     seed: 42
     dataloader_workers: 8
-    max_train_steps: 80000
+    max_train_steps: 50000
     max_grad_norm: 1.0
     ar_ratio: -1.0
     mc_samples: 16

@@ -1,6 +1,7 @@
 experiment:
-    project: "ar-250M-80BT"
+    project: "ar-250M-50BT"
     name: "ar"
+    wandb_project: "selfless-attention"
     output_dir: "output"
     save_every: 100
     eval_every: 100
@@ -14,6 +15,9 @@ experiment:
 
 model:
     model_path: "public/models/Qwen/Qwen3-250M-Custom"
+    attention_task: "ar"
+    loss_task: "likelihood"
+    mask_id: -1 # we will replace this id in the training script
     use_flex_attention: true
 
 dataset:
@@ -48,13 +52,13 @@ lr_scheduler:
         min_lr_scale: 0.01
 
 training:
-    batch_size: 16
+    batch_size: 32
     total_batch_size: 512
     mixed_precision: "bf16"
     enable_tf32: false
     seed: 42
     dataloader_workers: 8
-    max_train_steps: 80000
+    max_train_steps: 50000
     max_grad_norm: 1.0
     ar_ratio: -1.0
     mc_samples: 16

@@ -76,7 +76,7 @@ def main():
     accelerator = Accelerator(
         gradient_accumulation_steps=((config.training.total_batch_size // config.training.batch_size) // num_processes),
         mixed_precision=config.training.mixed_precision,
-        log_with="tensorboard",
+        log_with="wandb",
         project_dir=config.experiment.logging_dir,
         step_scheduler_with_optimizer=config.training.step_scheduler_with_optimizer,
     )
@@ -109,8 +109,9 @@ def main():
         log_config.pop("experiment.resume_from_checkpoint", None)
 
         accelerator.init_trackers(
-            config.experiment.name,
+            config.experiment.wandb_project,
             config=log_config,
+            init_kwargs={"wandb": {"name": config.experiment.project}},
         )
 
     # Set training seed
@@ -167,7 +168,7 @@ def main():
         num_warmup_steps=config.lr_scheduler.params.warmup_steps,
         num_decay_steps=config.lr_scheduler.params.decay_steps,
         num_training_steps=config.training.max_train_steps,
-        min_lr_ratio=optimizer_config.learning_rate * config.lr_scheduler.params.min_lr_scale
+        min_lr_ratio=config.lr_scheduler.params.min_lr_scale
     )
 
     ##################################

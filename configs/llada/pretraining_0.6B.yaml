@@ -1,6 +1,6 @@
 experiment:
-    project: "dream-1B-50BT"
-    name: "dream"
+    project: "llada-0.6B-50BT"
+    name: "llada"
     wandb_project: "selfless-attention"
     output_dir: "output_final"
     save_every: 100
@@ -14,7 +14,7 @@ experiment:
     resume_from_checkpoint: none
 
 model:
-    model_path: "public/models/Qwen/Qwen3-1B-Custom"
+    model_path: "public/models/Qwen/Qwen3-0.6B-Base"
     ckpt_path: ""
     attention_task: "random"
     loss_task: "likelihood"

@@ -11,4 +11,4 @@ uv run accelerate launch \
     --config_file accelerate_configs/1_node_8_gpus_deepspeed_zero2.yaml \
     --main_process_port=8889 \
     pretrain/train_xlnet.py \
-    config=configs/xlnet/pretraining_smoke.yaml
+    config=configs/xlnet/pretraining_0.6B.yaml

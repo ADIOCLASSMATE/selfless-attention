@@ -1,6 +1,7 @@
 experiment:
-    project: "xlnet-0.6B-80BT"
+    project: "xlnet-0.6B-50BT-ar"
     name: "xlnet"
+    wandb_project: "selfless-attention"
     output_dir: "output"
     save_every: 100
     eval_every: 100
@@ -10,11 +11,11 @@ experiment:
     checkpoints_total_limit: 200
     save_hfmodel_every: 10000
     val_every: 100
-    resume_from_checkpoint: "output/xlnet-0.6B-80BT/checkpoint-6700"
+    resume_from_checkpoint: none
 
 model:
     model_path: "public/models/Qwen/Qwen3-0.6B-Base"
-    attention_task: "random"
+    attention_task: "ar"
     loss_task: "likelihood"
     mask_id: -1 # we will replace this id in the training script
     use_flex_attention: true
@@ -57,7 +58,7 @@ training:
     enable_tf32: false
     seed: 42
     dataloader_workers: 8
-    max_train_steps: 80000
+    max_train_steps: 50000
     max_grad_norm: 1.0
     ar_ratio: -1.0
     mc_samples: 16

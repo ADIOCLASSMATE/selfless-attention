@@ -3,10 +3,12 @@
 export TOKENIZERS_PARALLELISM=true
 export HF_HUB_OFFLINE=1
 
+# Change to the project directory
 cd /inspire/hdd/global_user/wanjiaxin-253108030048/code/selfless-attention
 
-accelerate launch \
+# Run the training with accelerate
+uv run accelerate launch \
     --config_file accelerate_configs/1_node_8_gpus_deepspeed_zero2.yaml \
-    --main_process_port=8893 \
+    --main_process_port=8896 \
     pretrain/train_sdar.py \
-    config=configs/sdar/pretraining.yaml
+    config=configs/sdar/pretraining_250M.yaml

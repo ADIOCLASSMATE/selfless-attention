@@ -3,7 +3,7 @@
 export TOKENIZERS_PARALLELISM=true
 export HF_HUB_OFFLINE=1
 
-cd /inspire/hdd/global_user/wanjiaxin-253108030048/code/selfless-attention
+cd "$(dirname "$0")/../.."
 
 accelerate launch \
     --config_file accelerate_configs/1_node_8_gpus_deepspeed_zero2.yaml \

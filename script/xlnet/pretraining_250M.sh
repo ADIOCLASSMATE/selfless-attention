@@ -4,7 +4,7 @@ export TOKENIZERS_PARALLELISM=true
 export HF_HUB_OFFLINE=1
 
 # Change to the project directory
-cd /inspire/hdd/global_user/wanjiaxin-253108030048/code/selfless-attention
+cd "$(dirname "$0")/../.."
 
 # Run the training with accelerate
 uv run accelerate launch \

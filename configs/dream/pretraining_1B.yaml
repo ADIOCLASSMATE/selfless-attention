@@ -53,7 +53,7 @@ lr_scheduler:
         min_lr_scale: 0.01
 
 training:
-    batch_size: 64
+    batch_size: 16
     total_batch_size: 512
     mixed_precision: "bf16"
     enable_tf32: false
@@ -63,6 +63,6 @@ training:
     max_grad_norm: 1.0
     ar_ratio: -1.0
     mc_samples: 16
-    use_gradient_checkpointing: true
+    use_gradient_checkpointing: false
     step_scheduler_with_optimizer: false
     from_scratch: true

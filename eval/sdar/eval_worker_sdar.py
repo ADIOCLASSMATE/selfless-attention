@@ -9,14 +9,12 @@ import numpy as np
 import torch.nn.functional as F
 from datasets import Dataset
 from omegaconf import OmegaConf
-from utils.utils import get_xlnet_mask, load_model_tokenizer
-from utils.diffusion_utils import DiffusionLanguage
+from utils.utils import load_model_tokenizer
 from lm_eval.__main__ import cli_evaluate
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
 
 def set_seed(seed):
@@ -49,7 +47,6 @@ class DLLMEvalHarness(LM):
         self.model, self.tokenizer = load_model_tokenizer(config=self.eval_config)
         self.model.train()
         self.model.gradient_checkpointing_disable()
-        self.diff_lm = DiffusionLanguage(mask_token_id=self.model.config.mask_token_id, config=self.eval_config)
 
         self.device = self.accelerator.device
         self.model = self.accelerator.prepare(self.model)
@@ -66,32 +63,21 @@ class DLLMEvalHarness(LM):
     @property
     def world_size(self):
         return self._world_size
-    
-    @torch.no_grad()
-    def get_logits(self, input_ids, prompt_length):
-        _, v_sample = self.diff_lm.sample_v(input_ids, prompt_lengths=prompt_length)
-                            
-        query_attention_mask, kv_attention_mask = get_xlnet_mask(v_sample=v_sample, seq_len=input_ids.shape[-1], device=self.accelerator.device)
-                        
-        logits = self.model(X0_input_ids=input_ids, query_attention_mask=query_attention_mask, kv_attention_mask=kv_attention_mask).logits  # shape: [B, L, V]
-        
-        return logits
+
 
     @torch.no_grad()
-    def get_loglikelihood(self, input_ids, labels, prompt_length):
-        logits = self.get_logits(input_ids=input_ids, prompt_length=prompt_length)
+    def get_loglikelihood(self, input_ids, labels):
+        batch_size, seq_len = input_ids.shape
+        position_ids = torch.arange(seq_len, device=input_ids.device, dtype=torch.long).unsqueeze(0).expand(batch_size, -1)
         
-        loss = F.cross_entropy(
-            logits.view(-1, logits.size(-1)),
-            labels.view(-1),
-            ignore_index=-100,
-            reduction='sum',
-        )
-        # check_loss = loss / labels.ne(-100).sum()
-        loss = loss / input_ids.size(0)
-        # self.accelerator.print(f"check_loss: {check_loss}")
+        loss = self.model(input_ids,
+                position_ids=position_ids,
+                labels=labels).loss
         
-        return -loss.item()
+        answer_len = (labels != -100).sum()
+        loss_resume = loss * answer_len / input_ids.shape[0]
+        
+        return -loss_resume.item()
 
     @torch.no_grad()
     def suffix_greedy_prediction(self, prefix, target):
@@ -114,6 +100,9 @@ class DLLMEvalHarness(LM):
 
     def loglikelihood(self, requests):
         def _tokenize(e):
+            # if self.accelerator.is_main_process:
+            #     print(f"prefix: {e['prefix']}")
+            #     print(f"target: {e['target']}")
             prefix_ids, target_ids = self._encode_pair(e["prefix"], e["target"])
             input_ids = prefix_ids + target_ids
             labels = [-100] * len(prefix_ids) + target_ids
@@ -126,11 +115,9 @@ class DLLMEvalHarness(LM):
 
             input_ids = torch.tensor(input_ids, dtype=torch.long)[None, :].repeat((self.batch_size, 1))
             labels = torch.tensor(labels, dtype=torch.long)[None, :].repeat((self.batch_size, 1))
-            prompt_length = torch.tensor([p_len], dtype=torch.long).repeat(self.batch_size) # (B)
             return {
                 "input_ids": input_ids,
                 "labels": labels,
-                "prompt_length": prompt_length
             }
 
         raw_data = [{"prefix": req.args[0], "target": req.args[1]} for req in requests]
@@ -145,10 +132,9 @@ class DLLMEvalHarness(LM):
             for elem in tqdm(ds, desc="Computing likelihood..."):
                 input_ids = elem["input_ids"].to(self.device)
                 labels = elem["labels"].to(self.device)
-                prompt_length = elem["prompt_length"].to(self.device)
                 ll_list = []
                 for _ in range(self.mc_num // self.batch_size):
-                    ll = self.get_loglikelihood(input_ids, labels, prompt_length)
+                    ll = self.get_loglikelihood(input_ids, labels)
                     ll_list.append(ll)
 
                 ll_mean = np.mean(ll_list)
@@ -180,9 +166,7 @@ class DLLMEvalHarness(LM):
                 stride = max_len // 2
                 
                 total_ll = 0.0
-                
-                TOTAL_LOSS = 0
-                TOTAL_L = 0
+                total_tokens = 0
                 
                 for start_loc in range(0, seq_len, stride):
                     end_loc = min(start_loc + max_len, seq_len)
@@ -196,21 +180,24 @@ class DLLMEvalHarness(LM):
                         
                         if context_len < labels_window.size(1):
                             labels_window[:, :context_len] = -100
-                            prompt_length = torch.tensor([context_len], dtype=torch.long).repeat(self.batch_size).to(self.device)
                         else:
                             continue
                           
-                    else:
-                        prompt_length = torch.tensor([0], dtype=torch.long).repeat(self.batch_size).to(self.device)
 
                     ll_list = []
                     for _ in range(self.mc_num // self.batch_size):
-                        ll = self.get_loglikelihood(input_ids_window, labels_window, prompt_length)
+                        ll = self.get_loglikelihood(input_ids_window, labels_window)
                         ll_list.append(ll)
                         
                     ll_mean = np.mean(ll_list)
                     
+                    if start_loc == 0:
+                        n_tokens = input_ids_window.size(1) - 1
+                    else:
+                        n_tokens = input_ids_window.size(1) - stride
+                    
                     total_ll += ll_mean
+                    total_tokens += n_tokens
 
                 my_results.append(total_ll)
                 

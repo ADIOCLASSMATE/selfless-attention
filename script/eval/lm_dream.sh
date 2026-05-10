@@ -16,11 +16,10 @@ TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrand
 # echo "Tasks: $TASKS"
 
 
-accelerate launch $SCRIPT_NAME \
+uv run accelerate launch $SCRIPT_NAME \
     --model dllm \
     --model_args config_path=$CONFIG_PATH \
     --tasks $TASKS \
     --batch_size 1 \
-    --output_path "./output_eval_final/dream-80BT" \
+    --output_path "./output_eval/dream-250M-50BT" \
     --log_samples
-

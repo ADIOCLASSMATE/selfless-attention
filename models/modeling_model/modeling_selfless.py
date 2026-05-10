@@ -673,7 +673,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         # init sigma for prompt tokens
         if prompt_task == 'ar':
             sigma[:, :prompt_len] = prompt_len + 1 - torch.arange(0, prompt_len, device=self.device)
-        elif prompt_task == 'diffusion':
+        elif prompt_task == 'random':
             sigma[:, :prompt_len] = torch.rand(num_response, prompt_len, device=self.device) + 1.0
         else:
             raise ValueError(f"Invalid prompt task: {prompt_task}")

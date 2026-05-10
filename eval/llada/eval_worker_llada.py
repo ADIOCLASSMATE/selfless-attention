@@ -65,10 +65,6 @@ class DLLMEvalHarness(LM):
     def world_size(self):
         return self._world_size
     
-    @torch.compile()
-    def loss_function(self, logits, labels, ignore_index, reduction='mean'):
-        return F.cross_entropy(logits, labels, ignore_index=ignore_index, reduction=reduction)
-    
     @torch.no_grad()
     def get_logits(self, input_ids, prompt_length):
         input_ids_masked, masked_indices, t_sample, _ = self.diff_lm.forward_process(input_ids, prompt_length=prompt_length)
@@ -80,6 +76,10 @@ class DLLMEvalHarness(LM):
         
         return logits, masked_indices, t_sample
 
+    @torch.compile(mode="max-autotune-no-cudagraphs")
+    def loss_function(self, logits, labels, ignore_index, reduction='mean'):
+        return F.cross_entropy(logits, labels, ignore_index=ignore_index, reduction=reduction)
+    
     @torch.no_grad()
     def get_loglikelihood(self, input_ids, labels, prompt_length):
         logits, masked_indices, t_sample = self.get_logits(input_ids=input_ids, prompt_length=prompt_length)

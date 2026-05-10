@@ -2,8 +2,8 @@
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
-SCRIPT_NAME="eval/causal/eval_worker_causal.py"
-CONFIG_PATH="./configs/eval/lm_eval_causal.yaml"
+SCRIPT_NAME="eval/selfless/eval_worker_selfless.py"
+CONFIG_PATH="./configs/eval/lm_eval_selfless.yaml"
 TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrande,boolq,sciq,truthfulqa_mc1,truthfulqa_mc2,gpqa_diamond_zeroshot,super-glue-lm-eval-v1"
 cd "$(dirname "$0")/../.."
 accelerate launch $SCRIPT_NAME \
@@ -11,5 +11,5 @@ accelerate launch $SCRIPT_NAME \
     --model_args config_path=$CONFIG_PATH \
     --tasks $TASKS \
     --batch_size 1 \
-    --output_path "./output_eval_final/causal-all" \
+    --output_path "./output_eval_final/selfless-all" \
     --log_samples

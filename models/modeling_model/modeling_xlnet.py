@@ -631,18 +631,18 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         
     @torch.no_grad()
     def generate(self, prompt_ids, gen_length, num_response=1, prompt_task='ar', block_size=4, temperature=1.0, ratio=None, parallel_rate=None):
-        from utils.utils import get_selfless_mask
+        from utils.utils import get_xlnet_mask
         # 确保 prompt_ids 是 [1, L] 并复制为 [batch, L]
         if prompt_ids.dim() == 1:
             prompt_ids = prompt_ids.unsqueeze(0)
         prompt_ids = prompt_ids.repeat(num_response, 1)
-        
+
         prompt_len = prompt_ids.shape[-1]
         prefix = prompt_ids.to(self.device)
         # sigma 需要足够长以容纳 prompt + gen_length + block_size
         max_seq_len = prompt_len + gen_length + block_size
         sigma = torch.zeros((num_response, max_seq_len), dtype=torch.float32, device=self.device)
-        
+
         # init sigma for prompt tokens
         if prompt_task == 'ar':
             sigma[:, :prompt_len] = prompt_len + 1 - torch.arange(0, prompt_len, device=self.device)
@@ -659,11 +659,11 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             seq = torch.full((num_response, seq_len), self.config.mask_token_id, device=self.device)
             # 将 prefix 的内容复制到 seq 的前面部分
             seq[:, :prefix.shape[-1]] = prefix
-            attention_mask = get_selfless_mask(v_sample=sigma[:, :seq_len], seq_len=seq_len, device=self.device)
-                        
+            query_attention_mask, kv_attention_mask = get_xlnet_mask(v_sample=sigma[:, :seq_len], seq_len=seq_len, device=self.device)
+
             # 只要 batch 中任意一个样本在当前 block 还有 mask，就继续循环
             while seq.eq(self.config.mask_token_id).any():
-                logits = self(seq, attention_mask=attention_mask).logits # [batch, L, V]
+                logits = self(seq, query_attention_mask=query_attention_mask, kv_attention_mask=kv_attention_mask).logits # [batch, L, V]
                 
                 if temperature < 1e-6:
                     probs = torch.softmax(logits, dim=-1)

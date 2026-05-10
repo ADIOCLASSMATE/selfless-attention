@@ -9,14 +9,14 @@ import numpy as np
 import torch.nn.functional as F
 from datasets import Dataset
 from omegaconf import OmegaConf
-from utils.utils import get_diffusion_attention_mask, get_full_attention_mask, get_selfless_mask, load_model_tokenizer
+from utils.utils import get_selfless_mask, load_model_tokenizer
 from utils.diffusion_utils import DiffusionLanguage
 from lm_eval.__main__ import cli_evaluate
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
+
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -46,7 +46,8 @@ class DLLMEvalHarness(LM):
         
         # 加载模型和 Tokenizer
         self.model, self.tokenizer = load_model_tokenizer(config=self.eval_config)
-        self.model.eval()
+        self.model.train()
+        self.model.gradient_checkpointing_disable()
         self.diff_lm = DiffusionLanguage(mask_token_id=self.model.config.mask_token_id, config=self.eval_config)
 
         self.device = self.accelerator.device
@@ -67,32 +68,33 @@ class DLLMEvalHarness(LM):
     
     @torch.no_grad()
     def get_logits(self, input_ids, prompt_length):
-        input_ids_masked, masked_indices, t_sample, v_sample = self.diff_lm.forward_process(input_ids, prompt_length=prompt_length)
-                    
-        v_sample = torch.where(masked_indices, 0, v_sample).to(self.accelerator.device)
-        input_ids_masked = input_ids_masked.to(self.accelerator.device)
-        masked_indices = masked_indices.to(self.accelerator.device)
-        t_sample = t_sample.to(self.accelerator.device)
-        
-        attention_mask = get_selfless_mask(v_sample=v_sample, seq_len=input_ids_masked.shape[-1], device=self.accelerator.device)
+        _, v_sample = self.diff_lm.sample_v(input_ids, prompt_lengths=prompt_length)
+                            
+        attention_mask = get_selfless_mask(v_sample=v_sample, seq_len=input_ids.shape[-1], device=self.accelerator.device)
                         
-        logits = self.model(X0_input_ids=input_ids_masked, attention_mask=attention_mask).logits  # shape: [B, L, V]
+        logits = self.model(X0_input_ids=input_ids, attention_mask=attention_mask).logits  # shape: [B, L, V]
         
-        return logits, masked_indices, t_sample
+        return logits
 
+    @torch.compile(mode="max-autotune-no-cudagraphs")
+    def loss_function(self, logits, labels, ignore_index, reduction='mean'):
+        return F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=ignore_index, reduction=reduction)
+    
     @torch.no_grad()
     def get_loglikelihood(self, input_ids, labels, prompt_length):
-        logits, masked_indices, t_sample = self.get_logits(input_ids=input_ids, prompt_length=prompt_length)
-
-        loss = F.cross_entropy(
-            logits[masked_indices],
-            labels[masked_indices],
-            ignore_index=-100,
-            reduction='none',
-        )
-        loss = loss / t_sample[masked_indices]
-        loss = loss.sum() / input_ids.shape[0]
+        logits = self.get_logits(input_ids=input_ids, prompt_length=prompt_length)
+        loss = self.loss_function(logits=logits, labels=labels, ignore_index=-100, reduction='sum')
+        # loss = F.cross_entropy(
+        #     logits.view(-1, logits.size(-1)),
+        #     labels.view(-1),
+        #     ignore_index=-100,
+        #     reduction='sum',
+        # )
         
+        # check_loss = loss / labels.ne(-100).sum()
+        loss = loss / input_ids.size(0)
+        # self.accelerator.print(f"check_loss: {check_loss}")
+
         return -loss.item()
 
     @torch.no_grad()
@@ -116,9 +118,6 @@ class DLLMEvalHarness(LM):
 
     def loglikelihood(self, requests):
         def _tokenize(e):
-            # if self.accelerator.is_main_process:
-            #     print(f"prefix: {e['prefix']}")
-            #     print(f"target: {e['target']}")
             prefix_ids, target_ids = self._encode_pair(e["prefix"], e["target"])
             input_ids = prefix_ids + target_ids
             labels = [-100] * len(prefix_ids) + target_ids
@@ -186,6 +185,9 @@ class DLLMEvalHarness(LM):
                 
                 total_ll = 0.0
                 
+                TOTAL_LOSS = 0
+                TOTAL_L = 0
+                
                 for start_loc in range(0, seq_len, stride):
                     end_loc = min(start_loc + max_len, seq_len)
                     
@@ -211,7 +213,7 @@ class DLLMEvalHarness(LM):
                         ll_list.append(ll)
                         
                     ll_mean = np.mean(ll_list)
-                   
+                    
                     total_ll += ll_mean
 
                 my_results.append(total_ll)

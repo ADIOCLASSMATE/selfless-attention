@@ -1,7 +1,7 @@
 experiment:
-  project: "ar"
+  project: "ar-250M-50BT-lm-eval"
 
 max_len: 2048
 
 model:
-  model_path: "output_final/ar-80BT/hf_model-final" 
+  model_path: "output/ar-250M-50BT/hf_model-final" 

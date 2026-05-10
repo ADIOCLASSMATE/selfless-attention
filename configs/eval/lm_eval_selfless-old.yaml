@@ -1,5 +1,5 @@
 experiment:
-  project: "selfless-ar"
+  project: "selfless"
 
 max_len: 2048
 mc_num: 32
@@ -8,7 +8,7 @@ output_path: "./output_eval_final"
 
 model:
   model_path: "output_final/omega-80BT/hf_model-final" 
-  attention_task: ar
+  attention_task: random
   use_flex_attention: false
 
 training:

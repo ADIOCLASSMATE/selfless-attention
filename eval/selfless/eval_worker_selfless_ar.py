@@ -76,16 +76,21 @@ class DLLMEvalHarness(LM):
         
         return logits
 
+    @torch.compile(mode="max-autotune-no-cudagraphs")
+    def loss_function(self, logits, labels, ignore_index, reduction='mean'):
+        return F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=ignore_index, reduction=reduction)
+    
     @torch.no_grad()
     def get_loglikelihood(self, input_ids, labels, prompt_length):
         logits = self.get_logits(input_ids=input_ids, prompt_length=prompt_length)
         
-        loss = F.cross_entropy(
-            logits.view(-1, logits.size(-1)),
-            labels.view(-1),
-            ignore_index=-100,
-            reduction='sum',
-        )
+        # loss = F.cross_entropy(
+        #     logits.view(-1, logits.size(-1)),
+        #     labels.view(-1),
+        #     ignore_index=-100,
+        #     reduction='sum',
+        # )
+        loss = self.loss_function(logits, labels, ignore_index=-100, reduction='sum')
         loss = loss / input_ids.size(0)
         
         return -loss.item()

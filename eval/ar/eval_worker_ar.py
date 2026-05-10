@@ -67,17 +67,24 @@ class DLLMEvalHarness(LM):
     def world_size(self):
         return self._world_size
 
+    @torch.compile(mode="max-autotune-no-cudagraphs")
+    def loss_function(self, logits, labels, ignore_index, reduction='mean'):
+        return F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=ignore_index, reduction=reduction)
+    
     @torch.no_grad()
     def get_loglikelihood(self, input_ids, labels):
         # attention_mask = (input_ids != self.tokenizer.pad_token_id)
         logits = self.model(input_ids).logits
 
-        loss = F.cross_entropy(
-            logits[..., :-1, :].view(-1, logits.size(-1)),
-            labels[..., 1:].view(-1),
-            reduction="sum", 
-            ignore_index=-100
-        )
+        # loss = F.cross_entropy(
+        #     logits[..., :-1, :].view(-1, logits.size(-1)),
+        #     labels[..., 1:].view(-1),
+        #     reduction="sum", 
+        #     ignore_index=-100
+        # )
+        loss = self.loss_function(logits=logits[..., :-1, :], labels=labels[..., 1:], ignore_index=-100, reduction='sum')
+        
+        loss = loss / input_ids.size(0)
         
         return -loss.item()
 

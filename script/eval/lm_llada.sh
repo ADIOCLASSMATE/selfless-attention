@@ -17,11 +17,11 @@ TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrand
 # echo "Tasks: $TASKS"
 
 
-accelerate launch $SCRIPT_NAME \
+uv run accelerate launch $SCRIPT_NAME \
     --model dllm \
     --model_args config_path=$CONFIG_PATH \
     --tasks $TASKS \
     --batch_size 1 \
-    --output_path "./output_eval_final/llada-all/llada-20BT" \
+    --output_path "./output_eval/llada-250M-50BT" \
     --log_samples
 

@@ -15,7 +15,7 @@ from models.modeling_model.modeling_selfless import Qwen3ForCausalLM
 
 
 if __name__ == "__main__":
-    model_path = "output_final/sigma-ar+diff/hf_model-final"
+    model_path = "output/selfless-250M-50BT-ar/hf_model-final"
     model = Qwen3ForCausalLM.from_pretrained(model_path, trust_remote_code=True, dtype=torch.bfloat16).to("cuda")
     model.config.use_flex_attention = True
     model.eval()
@@ -42,11 +42,11 @@ if __name__ == "__main__":
             prompt_ids=input_ids,
             gen_length=1024,
             num_response=1,
-            prompt_task='diffusion',
-            block_size=32,
+            prompt_task='ar',
+            block_size=1,
             temperature=1.0,
             ratio=0.9,
-            parallel_rate=2,
+            parallel_rate=1,
             decode_strategy='random'
         )
         

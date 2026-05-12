@@ -8,8 +8,8 @@ experiment:
     generate_every: 10000
     log_every: 10
     log_grad_norm_every: 100
-    checkpoints_total_limit: 10
-    save_hfmodel_every: 1000
+    checkpoints_total_limit: 200
+    save_hfmodel_every: 10000
     val_every: 100
     resume_from_checkpoint: none
 

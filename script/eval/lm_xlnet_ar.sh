@@ -2,8 +2,8 @@
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
-SCRIPT_NAME="eval/ar/eval_worker_ar.py"
-CONFIG_PATH="./configs/eval/lm_eval_ar.yaml"
+SCRIPT_NAME="eval/xlnet/eval_worker_xlnet_ar.py"
+CONFIG_PATH="./configs/eval/lm_eval_xlnet_ar.yaml"
 TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrande,boolq,sciq,truthfulqa_mc1,truthfulqa_mc2,gpqa_diamond_zeroshot,super-glue-lm-eval-v1"
 cd "$(dirname "$0")/../.."
 uv run accelerate launch --num_processes 8 $SCRIPT_NAME \
@@ -11,5 +11,5 @@ uv run accelerate launch --num_processes 8 $SCRIPT_NAME \
     --model_args config_path=$CONFIG_PATH \
     --tasks $TASKS \
     --batch_size 1 \
-    --output_path "./output_eval/ar-250M-50BT" \
+    --output_path "./output_eval/xlnet-250M-50BT-ar" \
     --log_samples

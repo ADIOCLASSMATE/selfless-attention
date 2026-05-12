@@ -11,7 +11,7 @@ experiment:
     checkpoints_total_limit: 200
     save_hfmodel_every: 10000
     val_every: 100
-    resume_from_checkpoint: none
+    resume_from_checkpoint: "output/selfless-0.6B-50BT/checkpoint-34200"
 
 model:
     model_path: "public/models/Qwen/Qwen3-0.6B-Base"

@@ -91,7 +91,9 @@ class DLLMEvalHarness(LM):
             reduction='none',
         )
         loss = loss / t_sample[masked_indices]
+        check_loss = loss.mean()
         loss = loss.sum() / input_ids.shape[0]
+        self.accelerator.print(f"check_loss: {check_loss}")
         
         return -loss.item()
 

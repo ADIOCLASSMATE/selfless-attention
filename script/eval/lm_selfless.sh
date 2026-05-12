@@ -11,5 +11,5 @@ uv run accelerate launch --num_processes 8 $SCRIPT_NAME \
     --model_args config_path=$CONFIG_PATH \
     --tasks $TASKS \
     --batch_size 1 \
-    --output_path "./output_eval/selfless-250M-50BT" \
+    --output_path "./output_eval/selfless-250M-50BT-ar+ar" \
     --log_samples

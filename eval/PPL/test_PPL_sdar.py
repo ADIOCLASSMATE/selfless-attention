@@ -17,8 +17,6 @@ import torch
 from torch.utils.data import DataLoader
 from omegaconf import OmegaConf
 from models.modeling_model.modeling_sdar import SDARForCausalLM
-from utils.diffusion_utils import DiffusionLanguage
-from utils.utils import get_AR_attention_mask, get_diffusion_attention_mask, get_full_attention_mask
 
 
 class BatchRepeatCollator:

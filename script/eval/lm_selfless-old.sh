@@ -6,7 +6,7 @@ SCRIPT_NAME="eval/selfless/eval_worker_selfless.py"
 CONFIG_PATH="./configs/eval/lm_eval_selfless.yaml"
 TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrande,boolq,sciq,truthfulqa_mc1,truthfulqa_mc2,gpqa_diamond_zeroshot,super-glue-lm-eval-v1"
 cd "$(dirname "$0")/../.."
-accelerate launch $SCRIPT_NAME \
+accelerate launch --num_processes 8 $SCRIPT_NAME \
     --model dllm \
     --model_args config_path=$CONFIG_PATH \
     --tasks $TASKS \

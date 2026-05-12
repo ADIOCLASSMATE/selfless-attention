@@ -2,7 +2,7 @@
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
-SCRIPT_NAME="eval/LLaDA/eval_worker_llada.py"
+SCRIPT_NAME="eval/llada/eval_worker_llada.py"
 CONFIG_PATH="./configs/eval/lm_eval_llada.yaml"
 
 # 核心逻辑与常识
@@ -17,7 +17,7 @@ TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrand
 # echo "Tasks: $TASKS"
 
 
-uv run accelerate launch $SCRIPT_NAME \
+uv run accelerate launch --num_processes 8 $SCRIPT_NAME \
     --model dllm \
     --model_args config_path=$CONFIG_PATH \
     --tasks $TASKS \

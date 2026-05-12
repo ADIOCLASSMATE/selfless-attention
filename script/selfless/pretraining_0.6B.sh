@@ -3,6 +3,10 @@
 export TOKENIZERS_PARALLELISM=true
 export HF_HUB_OFFLINE=1
 
+# WandB resume: 续写已有的 run，不创建新的
+export WANDB_RESUME=allow
+export WANDB_RUN_ID=gdmb735u
+
 # Change to the project directory
 cd "$(dirname "$0")/../.."
 
@@ -11,5 +15,4 @@ uv run accelerate launch \
     --config_file accelerate_configs/1_node_8_gpus_deepspeed_zero2.yaml \
     --main_process_port=8888 \
     pretrain/train_selfless.py \
-    config=configs/selfless/pretraining_0.6B.yaml
-    
+    config=configs/selfless/pretraining_0.6B.yaml    

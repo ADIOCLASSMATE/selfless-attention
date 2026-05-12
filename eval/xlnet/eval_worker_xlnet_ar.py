@@ -19,7 +19,6 @@ from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from lm_eval.api.registry import register_model
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModel
 
 
 def set_seed(seed):
@@ -29,6 +28,7 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+
 @register_model("dllm")
 class DLLMEvalHarness(LM):
     def __init__(
@@ -37,18 +37,11 @@ class DLLMEvalHarness(LM):
         batch_size=1,
         device="cuda",
     ):
-        '''
-        Args:
-            config_path: Path to the model config.
-            device: 'cuda' or 'cpu'
-        '''
         super().__init__()
         self.eval_config = OmegaConf.load(config_path)
 
-        # 初始化 Accelerator
         self.accelerator = accelerate.Accelerator()
-        
-        # 加载模型和 Tokenizer
+
         self.model, self.tokenizer = load_model_tokenizer(config=self.eval_config)
         self.model.train()
         self.model.gradient_checkpointing_disable()
@@ -65,34 +58,32 @@ class DLLMEvalHarness(LM):
     @property
     def rank(self):
         return self._rank
-    
+
     @property
     def world_size(self):
         return self._world_size
-    
+
     @torch.no_grad()
     def get_logits(self, input_ids, prompt_length):
         _, v_sample = self.diff_lm.sample_v(input_ids, prompt_lengths=prompt_length)
-                            
+
         query_attention_mask, kv_attention_mask = get_xlnet_mask(v_sample=v_sample, seq_len=input_ids.shape[-1], device=self.accelerator.device)
-                        
-        logits = self.model(X0_input_ids=input_ids, query_attention_mask=query_attention_mask, kv_attention_mask=kv_attention_mask).logits  # shape: [B, L, V]
-        
+
+        logits = self.model(X0_input_ids=input_ids, query_attention_mask=query_attention_mask, kv_attention_mask=kv_attention_mask).logits
+
         return logits
 
     @torch.compile(mode="max-autotune-no-cudagraphs")
     def loss_function(self, logits, labels, ignore_index, reduction='mean'):
         return F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=ignore_index, reduction=reduction)
-    
+
     @torch.no_grad()
     def get_loglikelihood(self, input_ids, labels, prompt_length):
         logits = self.get_logits(input_ids=input_ids, prompt_length=prompt_length)
-        
-        loss = self.loss_function(logits=logits, labels=labels, ignore_index=-100, reduction='sum')
-        # check_loss = loss / labels.ne(-100).sum()
+
+        loss = self.loss_function(logits, labels, ignore_index=-100, reduction='sum')
         loss = loss / input_ids.size(0)
-        # self.accelerator.print(f"check_loss: {check_loss}")
-        
+
         return -loss.item()
 
     @torch.no_grad()
@@ -101,17 +92,15 @@ class DLLMEvalHarness(LM):
 
     def _encode(self, context):
         context_enc = self.tokenizer(context, add_special_tokens=False)["input_ids"]
-                
         return context_enc
-    
+
     def _encode_pair(self, context, continuation):
         whole_enc = self.tokenizer(context + continuation, add_special_tokens=False)["input_ids"]
         context_enc = self.tokenizer(context, add_special_tokens=False)["input_ids"]
-        
-        context_enc_len = len(context_enc)
 
+        context_enc_len = len(context_enc)
         continuation_enc = whole_enc[context_enc_len:]
-        
+
         return context_enc, continuation_enc
 
     def loglikelihood(self, requests):
@@ -119,7 +108,7 @@ class DLLMEvalHarness(LM):
             prefix_ids, target_ids = self._encode_pair(e["prefix"], e["target"])
             input_ids = prefix_ids + target_ids
             labels = [-100] * len(prefix_ids) + target_ids
-            p_len = len(prefix_ids) 
+            p_len = len(prefix_ids)
 
             if len(input_ids) > self.eval_config.max_len:
                 input_ids = input_ids[-self.eval_config.max_len:]
@@ -128,7 +117,7 @@ class DLLMEvalHarness(LM):
 
             input_ids = torch.tensor(input_ids, dtype=torch.long)[None, :].repeat((self.batch_size, 1))
             labels = torch.tensor(labels, dtype=torch.long)[None, :].repeat((self.batch_size, 1))
-            prompt_length = torch.tensor([p_len], dtype=torch.long).repeat(self.batch_size) # (B)
+            prompt_length = torch.tensor([p_len], dtype=torch.long).repeat(self.batch_size)
             return {
                 "input_ids": input_ids,
                 "labels": labels,
@@ -136,13 +125,13 @@ class DLLMEvalHarness(LM):
             }
 
         raw_data = [{"prefix": req.args[0], "target": req.args[1]} for req in requests]
-        
+
         ds = Dataset.from_list(raw_data)
         ds = ds.map(_tokenize)
         ds = ds.with_format("torch")
 
         my_results = []
-        
+
         with torch.no_grad():
             for elem in tqdm(ds, desc="Computing likelihood..."):
                 input_ids = elem["input_ids"].to(self.device)
@@ -155,7 +144,7 @@ class DLLMEvalHarness(LM):
 
                 ll_mean = np.mean(ll_list)
                 my_results.append((ll_mean, 0.0))
-                
+
         return my_results
 
     def loglikelihood_rolling(self, requests):
@@ -167,41 +156,38 @@ class DLLMEvalHarness(LM):
             }
 
         raw_data = [{"text": req.args[0]} for req in requests]
-        
+
         ds = Dataset.from_list(raw_data)
         ds = ds.map(_tokenize)
         ds = ds.with_format("torch")
 
         my_results = []
-        
+
         with torch.no_grad():
             for elem in tqdm(ds, desc="Computing rolling likelihood..."):
                 input_ids = elem["input_ids"]
                 seq_len = input_ids.size(-1)
                 max_len = self.eval_config.max_len
                 stride = max_len // 2
-                
+
                 total_ll = 0.0
-                
-                TOTAL_LOSS = 0
-                TOTAL_L = 0
-                
+
                 for start_loc in range(0, seq_len, stride):
                     end_loc = min(start_loc + max_len, seq_len)
-                    
+
                     input_ids_window = input_ids[:, start_loc:end_loc].to(self.device)
-                    
+
                     labels_window = input_ids_window.clone()
-                    
+
                     if start_loc > 0:
                         context_len = stride
-                        
+
                         if context_len < labels_window.size(1):
                             labels_window[:, :context_len] = -100
                             prompt_length = torch.tensor([context_len], dtype=torch.long).repeat(self.batch_size).to(self.device)
                         else:
                             continue
-                          
+
                     else:
                         prompt_length = torch.tensor([0], dtype=torch.long).repeat(self.batch_size).to(self.device)
 
@@ -209,17 +195,18 @@ class DLLMEvalHarness(LM):
                     for _ in range(self.mc_num // self.batch_size):
                         ll = self.get_loglikelihood(input_ids_window, labels_window, prompt_length)
                         ll_list.append(ll)
-                        
+
                     ll_mean = np.mean(ll_list)
-                    
+
                     total_ll += ll_mean
 
                 my_results.append(total_ll)
-                
+
         return my_results
 
     def generate_until(self, requests: list[Instance]):
         raise NotImplementedError
+
 
 if __name__ == "__main__":
     set_seed(42)

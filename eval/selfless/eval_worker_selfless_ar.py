@@ -9,7 +9,7 @@ import numpy as np
 import torch.nn.functional as F
 from datasets import Dataset
 from omegaconf import OmegaConf
-from utils.utils import get_diffusion_attention_mask, get_full_attention_mask, get_selfless_mask, load_model_tokenizer
+from utils.utils import get_selfless_mask, load_model_tokenizer
 from utils.diffusion_utils import DiffusionLanguage
 from lm_eval.__main__ import cli_evaluate
 from lm_eval.api.instance import Instance

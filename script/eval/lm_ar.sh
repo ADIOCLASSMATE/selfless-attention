@@ -2,8 +2,9 @@
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
+SIZE=${1:-"250M"}
 SCRIPT_NAME="eval/ar/eval_worker_ar.py"
-CONFIG_PATH="./configs/eval/lm_eval_ar.yaml"
+CONFIG_PATH="./configs/ar/lm_eval_ar_${SIZE}.yaml"
 TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrande,boolq,sciq,truthfulqa_mc1,truthfulqa_mc2,gpqa_diamond_zeroshot,super-glue-lm-eval-v1"
 cd "$(dirname "$0")/../.."
 uv run accelerate launch --num_processes 8 $SCRIPT_NAME \
@@ -11,5 +12,5 @@ uv run accelerate launch --num_processes 8 $SCRIPT_NAME \
     --model_args config_path=$CONFIG_PATH \
     --tasks $TASKS \
     --batch_size 1 \
-    --output_path "./output_eval/ar-250M-50BT" \
+    --output_path "./output_eval/ar-${SIZE}-50BT" \
     --log_samples

@@ -7,7 +7,7 @@ export HF_HUB_OFFLINE=1
 cd "$(dirname "$0")/../.."
 
 # Run the training with accelerate
-accelerate launch \
+uv run accelerate launch \
     --config_file accelerate_configs/1_node_8_gpus_deepspeed_zero2.yaml \
     --main_process_port=8892 \
     pretrain/train_dream.py \

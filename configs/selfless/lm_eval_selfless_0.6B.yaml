@@ -2,16 +2,16 @@ experiment:
   project: "selfless-0.6B-50BT-lm-eval"
 
 max_len: 2048
-mc_num: 1
-batch_size: 1
+mc_num: 32
+batch_size: 16
 output_path: "./output_eval"
 
 model:
   model_path: "output/selfless-0.6B-50BT/hf_model-final" 
-  attention_task: ar
+  attention_task: random
   use_flex_attention: false
 
 training:
   use_gradient_checkpointing: false
   from_scratch: false
-  prompt_task: ar
+  prompt_task: random

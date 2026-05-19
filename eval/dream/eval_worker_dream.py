@@ -123,7 +123,22 @@ class DLLMEvalHarness(LM):
             prefix_ids, target_ids = self._encode_pair(e["prefix"], e["target"])
             input_ids = prefix_ids + target_ids
             labels = [-100] * len(prefix_ids) + target_ids
-            p_len = len(prefix_ids) 
+            p_len = len(prefix_ids)
+
+            # FIX (2026-05-18) — Dream's AR-shift convention drops the LAST input token via
+            # `input_ids_masked[:, :-1]` during forward. When the target ends at the last
+            # position (always true for `loglikelihood`-style tasks like LAMBADA), the model
+            # never sees the [MASK] indicator at the target slot, causing catastrophically
+            # high perplexity on short targets. We pad with one extra "dummy" token at the
+            # end so that the dropped position is the dummy, not the target. The dummy gets
+            # label = -100 so it never contributes to the loss.
+            dummy_token_id = (
+                self.tokenizer.eos_token_id
+                if self.tokenizer.eos_token_id is not None
+                else self.model.config.mask_token_id
+            )
+            input_ids = input_ids + [dummy_token_id]
+            labels = labels + [-100]
 
             if len(input_ids) > self.eval_config.max_len:
                 input_ids = input_ids[-self.eval_config.max_len:]

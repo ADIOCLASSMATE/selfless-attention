@@ -169,8 +169,8 @@ def compiled_flex_attention(query, key, value, attention_mask, scaling, enable_g
     mode="default",
     dynamic=True
 )  
-def uncompiled_flex_attention(query, key, value, attention_mask, scaling, enable_gqa):
-    """不适用编译优化的 flex_attention 包装函数"""
+def dynamic_flex_attention(query, key, value, attention_mask, scaling, enable_gqa):
+    """自适应tokens长度的 flex_attention 包装函数"""
     return flex_attention(
         query=query,
         key=key,
@@ -181,34 +181,6 @@ def uncompiled_flex_attention(query, key, value, attention_mask, scaling, enable
         enable_gqa=enable_gqa,
         return_lse=False,
     )
-    
-# @torch.compile()
-def eager_diffusion_attention(
-    module: nn.Module,
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attention_mask: Optional[torch.Tensor],
-    scaling: float,
-    dropout: float = 0.0,
-    **kwargs: Unpack[TransformersKwargs],
-):
-    key_states = repeat_kv(key, module.num_key_value_groups)
-    value_states = repeat_kv(value, module.num_key_value_groups)
-
-    attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
-    if attention_mask is not None:
-        if attention_mask.dim() == 3:
-            attention_mask = attention_mask.unsqueeze(1)
-        diffusion_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-        attn_weights = attn_weights + diffusion_mask
-
-    attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
-    attn_weights = nn.functional.dropout(attn_weights, p=dropout, training=module.training)
-    attn_output = torch.matmul(attn_weights, value_states)
-    attn_output = attn_output.transpose(1, 2).contiguous()
-
-    return attn_output, attn_weights
 
     
 class Qwen3Attention(nn.Module):
@@ -244,8 +216,7 @@ class Qwen3Attention(nn.Module):
         X0_hidden_states: torch.Tensor,
         XT_hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        query_attention_mask: Optional[BlockMask] = None,
-        kv_attention_mask: Optional[BlockMask] = None,
+        attention_mask: BlockMask,
         past_key_values: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[FlashAttentionKwargs],
@@ -270,20 +241,20 @@ class Qwen3Attention(nn.Module):
         # 检查是否需要 GQA (Grouped Query Attention)
         enable_gqa = self.config.num_attention_heads != self.config.num_key_value_heads
         
-        if self.config.use_flex_attention == False or self.training == False:
-            X0_attn_output = uncompiled_flex_attention(
+        if self.training == False:
+            X0_attn_output = dynamic_flex_attention(
                 query=X0_query_states,
                 key=X0_key_states,
                 value=X0_value_states,
-                attention_mask=kv_attention_mask,  # 直接传入 BlockMask
+                attention_mask=attention_mask,  # 直接传入 BlockMask
                 scaling=self.scaling,  # 使用预定义的缩放因子
                 enable_gqa=enable_gqa,  # 如果 kv heads 少于 q heads，需要启用
             )
-            XT_attn_output = uncompiled_flex_attention(
+            XT_attn_output = dynamic_flex_attention(
                 query=XT_query_states,
                 key=X0_key_states,
                 value=X0_value_states,
-                attention_mask=query_attention_mask,  # 直接传入 BlockMask
+                attention_mask=attention_mask,  # 直接传入 BlockMask
                 scaling=self.scaling,  # 使用预定义的缩放因子
                 enable_gqa=enable_gqa,  # 如果 kv heads 少于 q heads，需要启用
             ) if XT_query_states is not None else None
@@ -294,7 +265,7 @@ class Qwen3Attention(nn.Module):
                 query=X0_query_states,
                 key=X0_key_states,
                 value=X0_value_states,
-                attention_mask=kv_attention_mask,  # 直接传入 BlockMask
+                attention_mask=attention_mask,  # 直接传入 BlockMask
                 scaling=self.scaling,  # 使用预定义的缩放因子
                 enable_gqa=enable_gqa,  # 如果 kv heads 少于 q heads，需要启用
             )
@@ -302,7 +273,7 @@ class Qwen3Attention(nn.Module):
                 query=XT_query_states,
                 key=X0_key_states,
                 value=X0_value_states,
-                attention_mask=query_attention_mask,  # 直接传入 BlockMask
+                attention_mask=attention_mask,  # 直接传入 BlockMask
                 scaling=self.scaling,  # 使用预定义的缩放因子
                 enable_gqa=enable_gqa,  # 如果 kv heads 少于 q heads，需要启用
             ) if XT_query_states is not None else None
@@ -335,8 +306,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         self,
         X0_hidden_states: torch.Tensor,
         XT_hidden_states: torch.Tensor,
-        query_attention_mask: Optional[BlockMask] = None,
-        kv_attention_mask: Optional[BlockMask] = None,
+        attention_mask: BlockMask,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
         use_cache: Optional[bool] = False,
@@ -352,8 +322,7 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         X0_hidden_states, XT_hidden_states, _ = self.self_attn(
             X0_hidden_states=X0_hidden_states,
             XT_hidden_states=XT_hidden_states,
-            query_attention_mask=query_attention_mask,
-            kv_attention_mask=kv_attention_mask,
+            attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
             use_cache=use_cache,
@@ -455,34 +424,38 @@ class Qwen3Model(Qwen3PreTrainedModel):
     def forward(
         self,
         X0_input_ids: Optional[torch.LongTensor] = None,
-        query_attention_mask: Optional[BlockMask] = None,
-        kv_attention_mask: Optional[BlockMask] = None,
+        attention_mask: Optional[BlockMask] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
         X0_inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        calculate_likelihood: Optional[bool] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
         r"""
         Args:
-            time_sample (`torch.Tensor` of shape `(batch_size, sequence_length + 1)`, *optional*):
-                Time sampling tensor for diffusion-causal attention. Each element represents the diffusion time step
-                for the corresponding token. Tokens with larger time values cannot attend to tokens with smaller time
-                values. The first element should be 1.1 to ensure all tokens can attend to the first position.
+            X0_input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Indices of input sequence tokens in the vocabulary.
+            attention_mask (`BlockMask`, *optional*):
+                Attention mask for Flex Attention. Should be a block mask of shape `(batch_size, sequence_length)`.
+            calculate_likelihood (`bool`, *optional*):
+                Whether to calculate the likelihood of the input sequence. If `True`, the model will compute the likelihood using the XT stream, which is necessary for training. If `False`, the model will only compute the hidden states for the X0 stream, which can be used for efficient decoding.
         """
         if (X0_input_ids is None) ^ (X0_inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
-        if query_attention_mask is None or kv_attention_mask is None:
+        if attention_mask is None:
             raise ValueError("attention_mask must be provided for diffusion-causal attention.")
 
         if X0_inputs_embeds is None:
             X0_inputs_embeds = self.embed_tokens(X0_input_ids)
-        
-        # Always initialize XT stream for XLNet generation
-        if self.XT_input_ids is None or self.XT_input_ids.shape[-1] != X0_input_ids.shape[-1]:
-            self.XT_input_ids = torch.full_like(X0_input_ids, self.config.mask_token_id)
-        XT_inputs_embeds = self.embed_tokens(self.XT_input_ids)
+        if self.training or calculate_likelihood:
+            if self.XT_input_ids is None or self.XT_input_ids.shape[-1] != X0_input_ids.shape[-1]:
+                self.XT_input_ids = torch.full_like(X0_input_ids, self.config.mask_token_id)
+            XT_inputs_embeds = self.embed_tokens(self.XT_input_ids)
+        else:
+            self.XT_input_ids = None
+            XT_inputs_embeds = None
 
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache(config=self.config)
@@ -505,8 +478,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
             X0_hidden_states, XT_hidden_states = decoder_layer(
                 X0_hidden_states,
                 XT_hidden_states,
-                query_attention_mask,
-                kv_attention_mask,
+                attention_mask,
                 position_ids=position_ids,
                 past_key_values=past_key_values,
                 use_cache=use_cache,
@@ -515,11 +487,18 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 **kwargs,
             )
 
-        XT_hidden_states = self.norm(XT_hidden_states)
-        return BaseModelOutputWithPast(
-            last_hidden_state=XT_hidden_states,
-            past_key_values=past_key_values if use_cache else None,
-        )
+        if self.training or calculate_likelihood:
+            XT_hidden_states = self.norm(XT_hidden_states)
+            return BaseModelOutputWithPast(
+                last_hidden_state=XT_hidden_states,
+                past_key_values=past_key_values if use_cache else None,
+            )
+        else:
+            X0_hidden_states = self.norm(X0_hidden_states)
+            return BaseModelOutputWithPast(
+                last_hidden_state=X0_hidden_states,
+                past_key_values=past_key_values if use_cache else None,
+            )
 
 
 @auto_docstring
@@ -542,8 +521,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
     def forward(
         self,
         X0_input_ids: Optional[torch.LongTensor] = None,
-        query_attention_mask: Optional[BlockMask] = None,
-        kv_attention_mask: Optional[BlockMask] = None,
+        attention_mask: Optional[BlockMask] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[Cache] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
@@ -551,43 +529,36 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
+        calculate_likelihood: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> CausalLMOutputWithPast:
         r"""
-        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-            config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-            (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-        
-        time_sample (`torch.Tensor` of shape `(batch_size, sequence_length + 1)`, *optional*):
-                Time sampling tensor for diffusion-causal attention. Each element represents the diffusion time step
-                for the corresponding token. Tokens with larger time values cannot attend to tokens with smaller time
-                values. The first element should be 1.1 to ensure all tokens can attend to the first position.
-        Example:
-
-        ```python
-        >>> from transformers import AutoTokenizer, Qwen3ForCausalLM
-
-        >>> model = Qwen3ForCausalLM.from_pretrained("Qwen/Qwen3-8B")
-        >>> tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
-
-        >>> prompt = "Hey, are you conscious? Can you talk to me?"
-        >>> inputs = tokenizer(prompt, return_tensors="pt")
-
-        >>> # Generate
-        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
+        Args:
+            X0_input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Indices of input sequence tokens in the vocabulary. The input sequence should be formatted as
+                `[X0_1, X0_2, ..., X0_n]`, where `X0_i` represents the tokens at diffusion time step 0 for the i-th
+                position. All tokens in `X0_input_ids` should have the same diffusion time step (i.e., all should be
+                from the same "diffusion slice"). If `inputs_embeds` is not provided, this argument will be used to
+                compute the input embeddings.
+            attention_mask (`BlockMask`, *optional*):
+                Attention mask for diffusion-causal attention. Should be a block mask of shape `(batch_size,
+                sequence_length)` where each block corresponds to a diffusion time step. The mask should be designed
+                such that tokens can only attend to tokens from the same or earlier diffusion time steps, and not to
+                tokens from later diffusion time steps.
+            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Labels for language modeling. Tokens with labels set to -100 will be ignored when computing the loss.
+            calculate_likelihood (`bool`, *optional*, defaults to `False`):
+                Whether to calculate the likelihood of the input sequence. If `True`, the model will compute the likelihood using the XT stream, which is necessary for training. If `False`, the model will only compute the hidden states for the X0 stream, which can be used for efficient decoding. Note that when `calculate_likelihood` is `True`, the model will return the likelihood loss in the `loss` field of the output, and the `logits` field will contain the logits from the XT stream.
         ```"""
         outputs: BaseModelOutputWithPast = self.model(
             X0_input_ids=X0_input_ids,
-            query_attention_mask=query_attention_mask,
-            kv_attention_mask=kv_attention_mask,
+            attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             cache_position=cache_position,
+            calculate_likelihood=calculate_likelihood,
             **kwargs,
         )
 
@@ -595,7 +566,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         logits = self.lm_head(hidden_states[:, slice_indices, :])
-
+        
         loss = None
         if labels is not None:
             loss = self.loss_function(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-100)
@@ -613,23 +584,23 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         return F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=ignore_index, reduction=reduction)
         
     @torch.no_grad()
-    def generate(self, prompt_ids, gen_length, num_response=1, prompt_task='ar', block_size=4, temperature=1.0, ratio=None, parallel_rate=None):
-        from utils.utils import get_xlnet_mask
+    def generate(self, prompt_ids, gen_length, num_response=1, prompt_task='ar', block_size=4, temperature=1.0, ratio=None, parallel_rate=None, decode_strategy='confidence'):
+        from utils.utils import get_selfless_mask
         # 确保 prompt_ids 是 [1, L] 并复制为 [batch, L]
         if prompt_ids.dim() == 1:
             prompt_ids = prompt_ids.unsqueeze(0)
         prompt_ids = prompt_ids.repeat(num_response, 1)
-
+        
         prompt_len = prompt_ids.shape[-1]
         prefix = prompt_ids.to(self.device)
         # sigma 需要足够长以容纳 prompt + gen_length + block_size
         max_seq_len = prompt_len + gen_length + block_size
         sigma = torch.zeros((num_response, max_seq_len), dtype=torch.float32, device=self.device)
-
+        
         # init sigma for prompt tokens
         if prompt_task == 'ar':
             sigma[:, :prompt_len] = prompt_len + 1 - torch.arange(0, prompt_len, device=self.device)
-        elif prompt_task == 'diffusion':
+        elif prompt_task == 'random':
             sigma[:, :prompt_len] = torch.rand(num_response, prompt_len, device=self.device) + 1.0
         else:
             raise ValueError(f"Invalid prompt task: {prompt_task}")
@@ -642,11 +613,11 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             seq = torch.full((num_response, seq_len), self.config.mask_token_id, device=self.device)
             # 将 prefix 的内容复制到 seq 的前面部分
             seq[:, :prefix.shape[-1]] = prefix
-            query_attention_mask, kv_attention_mask = get_xlnet_mask(v_sample=sigma[:, :seq_len], seq_len=seq_len, device=self.device)
-
+            attention_mask = get_selfless_mask(v_sample=sigma[:, :seq_len], seq_len=seq_len, device=self.device)
+                        
             # 只要 batch 中任意一个样本在当前 block 还有 mask，就继续循环
             while seq.eq(self.config.mask_token_id).any():
-                logits = self(seq, query_attention_mask=query_attention_mask, kv_attention_mask=kv_attention_mask).logits # [batch, L, V]
+                logits = self(seq, attention_mask=attention_mask).logits # [batch, L, V]
                 
                 if temperature < 1e-6:
                     probs = torch.softmax(logits, dim=-1)
@@ -664,30 +635,39 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
                 masked_conf = conf.masked_fill(~valid_mask, -1.0)
                 
                 # 决策填充位置
-                if parallel_rate is not None:
-                    k = int(parallel_rate)
-                    k = max(1, k)
-                    # 选取置信度最高的 k 个位置
-                    topk_values, topk_indices = torch.topk(masked_conf, k=k, dim=-1)
-                    
+                if decode_strategy == 'random':
                     fill_mask = torch.zeros_like(masked_conf, dtype=torch.bool)
-                    # 过滤掉非mask位置（值为-1.0的位置），确保只填充有效的mask token
-                    fill_mask.scatter_(1, topk_indices, topk_values > -0.5)
-                elif ratio is not None:
-                    fill_mask = (masked_conf >= ratio)
-                    # Fallback: 检查哪些 batch 样本没有选中任何位置，强制选最好的一个
-                    # 但需要排除已经生成完的样本（没有mask token的样本）
-                    rows_with_no_fill = ~(fill_mask.any(dim=-1))
-                    # 只对还有mask token的样本进行fallback
                     rows_still_have_mask = valid_mask.any(dim=-1)  # [batch]
-                    rows_need_fallback = rows_with_no_fill & rows_still_have_mask
-                    if rows_need_fallback.any():
-                        fallback_cols = masked_conf[rows_need_fallback].argmax(dim=-1)
-                        fill_mask[rows_need_fallback, fallback_cols] = True
-                else:
-                    # 每个 batch 样本选一个置信度最高的
-                    fill_mask = torch.zeros_like(masked_conf, dtype=torch.bool)
-                    fill_mask.scatter_(1, masked_conf.argmax(dim=-1, keepdim=True), True)
+                    if rows_still_have_mask.any():
+                        rows_idx = rows_still_have_mask.nonzero(as_tuple=True)[0]  # 需采样的 batch 行
+                        # 在各行的有效 mask 位置上均匀采样parallel_rate个列索引
+                        sampled_cols = torch.multinomial(valid_mask[rows_idx].float(), num_samples=1 if parallel_rate is None else max(1, int(parallel_rate)), replacement=False)
+                        fill_mask[rows_idx, sampled_cols] = True
+                elif decode_strategy == 'confidence':
+                    if parallel_rate is not None:
+                        k = int(parallel_rate)
+                        k = max(1, k)
+                        # 选取置信度最高的 k 个位置
+                        topk_values, topk_indices = torch.topk(masked_conf, k=k, dim=-1)
+                        
+                        fill_mask = torch.zeros_like(masked_conf, dtype=torch.bool)
+                        # 过滤掉非mask位置（值为-1.0的位置），确保只填充有效的mask token
+                        fill_mask.scatter_(1, topk_indices, topk_values > -0.5)
+                    elif ratio is not None:
+                        fill_mask = (masked_conf >= ratio)
+                        # Fallback: 检查哪些 batch 样本没有选中任何位置，强制选最好的一个
+                        # 但需要排除已经生成完的样本（没有mask token的样本）
+                        rows_with_no_fill = ~(fill_mask.any(dim=-1))
+                        # 只对还有mask token的样本进行fallback
+                        rows_still_have_mask = valid_mask.any(dim=-1)  # [batch]
+                        rows_need_fallback = rows_with_no_fill & rows_still_have_mask
+                        if rows_need_fallback.any():
+                            fallback_cols = masked_conf[rows_need_fallback].argmax(dim=-1)
+                            fill_mask[rows_need_fallback, fallback_cols] = True
+                    else:
+                        # 每个 batch 样本选一个置信度最高的
+                        fill_mask = torch.zeros_like(masked_conf, dtype=torch.bool)
+                        fill_mask.scatter_(1, masked_conf.argmax(dim=-1, keepdim=True), True)
                 
                 # 批量更新：获取 batch 索引(rows)和位置索引(cols)
                 rows, cols = fill_mask.nonzero(as_tuple=True)
@@ -720,6 +700,163 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         
         return out_put
         
+    @torch.no_grad()
+    def speculative_generate(self, prompt_ids, gen_length, num_response=1, prompt_task='ar', block_size=4, temperature=1.0, ratio=None, parallel_rate=None):
+        from utils.utils import get_selfless_mask
+        
+        # 1. 初始化
+        if prompt_ids.dim() == 1:
+            prompt_ids = prompt_ids.unsqueeze(0)
+        prompt_ids = prompt_ids.repeat(num_response, 1)
+        
+        prompt_len = prompt_ids.shape[-1]
+        prefix = prompt_ids.to(self.device)
+        
+        # 初始化全局 Sigma
+        max_seq_len = prompt_len + gen_length + block_size
+        sigma = torch.zeros((num_response, max_seq_len), dtype=torch.float32, device=self.device)
+        
+        # Context 的 Sigma 设置
+        if prompt_task == 'ar':
+            sigma[:, :prompt_len] = prompt_len + 1 - torch.arange(0, prompt_len, device=self.device)
+        elif prompt_task == 'diffusion':
+            sigma[:, :prompt_len] = torch.rand(num_response, prompt_len, device=self.device) + 1.0
+        else:
+            raise ValueError(f"Invalid prompt task: {prompt_task}")
+
+        global_step = 0 
+        generated_tokens = 0
+        end_token_id = getattr(self.config, 'eos_token_id', None)
+
+        while prefix.shape[-1] < prompt_len + gen_length:
+            curr_len = prefix.shape[-1]
+            curr_block_size = min(block_size, prompt_len + gen_length - curr_len)
+            if curr_block_size <= 0: break
+            seq_len = curr_len + curr_block_size
+            
+            # ==============================================================
+            # Phase 1: Draft
+            # ==============================================================
+            draft_seq = torch.full((num_response, seq_len), self.config.mask_token_id, device=self.device)
+            draft_seq[:, :curr_len] = prefix
+            
+            draft_sigma = sigma.clone() 
+            # 保持 float32 以确保精度
+            draft_token_probs = torch.zeros((num_response, curr_block_size), dtype=torch.float32, device=self.device)
+            draft_inner_step = global_step
+            
+            while draft_seq[:, curr_len:].eq(self.config.mask_token_id).any():
+                attention_mask = get_selfless_mask(v_sample=draft_sigma[:, :seq_len], seq_len=seq_len, device=self.device)
+                
+                logits = self(draft_seq, attention_mask=attention_mask).logits
+                
+                if temperature < 1e-6:
+                    probs = torch.softmax(logits, dim=-1)
+                    next_token = logits.argmax(dim=-1)
+                else:
+                    probs = torch.softmax(logits / temperature, dim=-1)
+                    next_token = torch.multinomial(probs.reshape(-1, probs.size(-1)), 1).view(num_response, -1)
+                
+                conf = probs.gather(-1, next_token.unsqueeze(-1)).squeeze(-1)
+                valid_mask = draft_seq.eq(self.config.mask_token_id)
+                masked_conf = conf.masked_fill(~valid_mask, -1.0)
+                
+                if parallel_rate is not None:
+                    k_p = max(1, int(parallel_rate))
+                    topk_values, topk_indices = torch.topk(masked_conf, k=k_p, dim=-1)
+                    fill_mask = torch.zeros_like(masked_conf, dtype=torch.bool)
+                    fill_mask.scatter_(1, topk_indices, topk_values > -0.5)
+                elif ratio is not None:
+                    fill_mask = (masked_conf >= ratio)
+                    rows_with_no_fill = ~(fill_mask.any(dim=-1))
+                    rows_still_have_mask = valid_mask.any(dim=-1)
+                    rows_need_fallback = rows_with_no_fill & rows_still_have_mask
+                    if rows_need_fallback.any():
+                        fallback_cols = masked_conf[rows_need_fallback].argmax(dim=-1)
+                        fill_mask[rows_need_fallback, fallback_cols] = True
+                else:
+                    fill_mask = torch.zeros_like(masked_conf, dtype=torch.bool)
+                    fill_mask.scatter_(1, masked_conf.argmax(dim=-1, keepdim=True), True)
+                
+                rows, cols = fill_mask.nonzero(as_tuple=True)
+                draft_seq[rows, cols] = next_token[rows, cols]
+                
+                block_cols = cols - curr_len
+                valid_updates = (block_cols >= 0) & (block_cols < curr_block_size)
+                if valid_updates.any():
+                    r_ = rows[valid_updates]
+                    c_ = cols[valid_updates] 
+                    bc_ = block_cols[valid_updates]
+                    # 【修复点】：显式转换 dtype，解决 BFloat16 -> Float32 赋值报错
+                    draft_token_probs[r_, bc_] = conf[r_, c_].to(dtype=draft_token_probs.dtype)
+
+                draft_sigma[rows, cols] = 0.1 + 0.8 * (1.0 - draft_inner_step / (gen_length + 1.0))
+                draft_inner_step += 1
+            
+            draft_tokens = draft_seq[:, curr_len:]
+
+            # ==============================================================
+            # Phase 2: Verify
+            # ==============================================================
+            verify_sigma = sigma.clone()
+            
+            block_steps = torch.arange(curr_block_size, device=self.device) + global_step
+            block_ar_sigmas = 0.1 + 0.8 * (1.0 - block_steps / (gen_length + 1.0))
+            
+            verify_sigma[:, curr_len:seq_len] = block_ar_sigmas.unsqueeze(0)
+            
+            verify_attention_mask = get_selfless_mask(v_sample=verify_sigma[:, :seq_len], seq_len=seq_len, device=self.device)
+            
+            verify_outputs = self(draft_seq, attention_mask=verify_attention_mask)
+            verify_logits = verify_outputs.logits[:, curr_len:, :]
+            
+            if temperature < 1e-6:
+                target_probs = torch.softmax(verify_logits, dim=-1)
+            else:
+                target_probs = torch.softmax(verify_logits / temperature, dim=-1)
+
+            # ==============================================================
+            # Phase 3: Accept / Reject
+            # ==============================================================
+            target_token_probs = target_probs.gather(-1, draft_tokens.unsqueeze(-1)).squeeze(-1)
+            
+            # 【优化点】：统一转换为 float32 进行除法运算，保证稳定性
+            acc_ratios = target_token_probs.to(torch.float32) / (draft_token_probs + 1e-10)
+            accept_mask = torch.rand_like(acc_ratios) < acc_ratios
+            
+            num_accepted = accept_mask.cumprod(dim=1).sum(dim=1).long()
+            safe_n = num_accepted.min().item() 
+            
+            prefix = torch.cat([prefix, draft_tokens[:, :safe_n]], dim=1)
+            
+            accepted_steps = torch.arange(safe_n, device=self.device) + global_step
+            accepted_sigmas = 0.1 + 0.8 * (1.0 - accepted_steps / (gen_length + 1.0))
+            sigma[:, curr_len : curr_len+safe_n] = accepted_sigmas.unsqueeze(0)
+            
+            global_step += safe_n
+            generated_tokens += safe_n
+            
+            if safe_n < curr_block_size:
+                resampled_token = torch.multinomial(target_probs[:, safe_n, :], 1)
+                prefix = torch.cat([prefix, resampled_token], dim=1)
+                
+                new_sigma = 0.1 + 0.8 * (1.0 - global_step / (gen_length + 1.0))
+                sigma[:, curr_len+safe_n] = new_sigma
+                
+                global_step += 1
+                generated_tokens += 1
+                
+            if end_token_id is not None:
+                new_part = prefix[:, curr_len:]
+                if (new_part == end_token_id).any(dim=-1).all():
+                    break
+                    
+        parallel_rate_metric = (generated_tokens / num_response) / (global_step + 1e-6) if global_step > 0 else 0.0
+            
+        return {
+            'seq': prefix,
+            'parallel_rate': parallel_rate_metric
+        }
     
 class Qwen3ForSequenceClassification(GenericForSequenceClassification, Qwen3PreTrainedModel):
     pass

@@ -47,6 +47,7 @@ class DLLMEvalHarness(LM):
         self.model, self.tokenizer = load_model_tokenizer(config=self.eval_config)
         self.model.train()
         self.model.gradient_checkpointing_disable()
+        self.mask_token_id = self.model.config.mask_token_id
 
         self.device = self.accelerator.device
         self.model = self.accelerator.prepare(self.model)
@@ -80,6 +81,35 @@ class DLLMEvalHarness(LM):
         return -loss_resume.item()
 
     @torch.no_grad()
+    def get_loglikelihood_forced(self, input_ids, labels):
+        """LAMBADA: force-mask target, eval mode with bidirectional attention, deterministic CE.
+
+        Switches to model.eval() to use the standard forward path (no block concat,
+        no random masking, no 1/t division). Restores model.train() via try/finally.
+        Eval path uses full bidirectional attention (is_causal=False) — same access
+        pattern as LLaDA's bidirectional eval.
+        """
+        B, L = input_ids.shape
+        mask_id = self.mask_token_id
+        position_ids = torch.arange(L, device=input_ids.device, dtype=torch.long).unsqueeze(0).expand(B, -1)
+
+        input_ids_masked = input_ids.clone()
+        target_mask = (labels != -100)
+        input_ids_masked[target_mask] = mask_id
+
+        self.model.eval()
+        try:
+            loss = self.model(input_ids_masked, position_ids=position_ids, labels=labels).loss
+        finally:
+            self.model.train()
+
+        # loss = CrossEntropyLoss(reduction='mean') over non-ignored positions
+        # B identical copies, 1 valid label each -> loss = sum(CE_i) / B = CE_single
+        answer_len = (labels != -100).sum()  # = B
+        loss_resume = loss * answer_len / B   # = CE_single * B / B = CE_single
+        return -loss_resume.item()
+
+    @torch.no_grad()
     def suffix_greedy_prediction(self, prefix, target):
         raise NotImplementedError
 
@@ -104,9 +134,10 @@ class DLLMEvalHarness(LM):
             #     print(f"prefix: {e['prefix']}")
             #     print(f"target: {e['target']}")
             prefix_ids, target_ids = self._encode_pair(e["prefix"], e["target"])
+            target_len = len(target_ids)
             input_ids = prefix_ids + target_ids
             labels = [-100] * len(prefix_ids) + target_ids
-            p_len = len(prefix_ids) 
+            p_len = len(prefix_ids)
 
             if len(input_ids) > self.eval_config.max_len:
                 input_ids = input_ids[-self.eval_config.max_len:]
@@ -118,6 +149,7 @@ class DLLMEvalHarness(LM):
             return {
                 "input_ids": input_ids,
                 "labels": labels,
+                "target_len": target_len,
             }
 
         raw_data = [{"prefix": req.args[0], "target": req.args[1]} for req in requests]
@@ -132,13 +164,19 @@ class DLLMEvalHarness(LM):
             for elem in tqdm(ds, desc="Computing likelihood..."):
                 input_ids = elem["input_ids"].to(self.device)
                 labels = elem["labels"].to(self.device)
-                ll_list = []
-                for _ in range(self.mc_num // self.batch_size):
-                    ll = self.get_loglikelihood(input_ids, labels)
-                    ll_list.append(ll)
+                target_len = elem["target_len"].item()
 
-                ll_mean = np.mean(ll_list)
-                my_results.append((ll_mean, 0.0))
+                if target_len == 1:
+                    ll = self.get_loglikelihood_forced(input_ids, labels)
+                    my_results.append((ll, 0.0))
+                else:
+                    ll_list = []
+                    for _ in range(self.mc_num // self.batch_size):
+                        ll = self.get_loglikelihood(input_ids, labels)
+                        ll_list.append(ll)
+
+                    ll_mean = np.mean(ll_list)
+                    my_results.append((ll_mean, 0.0))
                 
         return my_results
 

@@ -169,8 +169,8 @@ def compiled_flex_attention(query, key, value, attention_mask, scaling, enable_g
     mode="default",
     dynamic=True
 )  
-def uncompiled_flex_attention(query, key, value, attention_mask, scaling, enable_gqa):
-    """不适用编译优化的 flex_attention 包装函数"""
+def dynamic_flex_attention(query, key, value, attention_mask, scaling, enable_gqa):
+    """自适应tokens长度的 flex_attention 包装函数"""
     return flex_attention(
         query=query,
         key=key,
@@ -270,8 +270,8 @@ class Qwen3Attention(nn.Module):
         # 检查是否需要 GQA (Grouped Query Attention)
         enable_gqa = self.config.num_attention_heads != self.config.num_key_value_heads
         
-        if self.config.use_flex_attention == False or self.training == False:
-            X0_attn_output = uncompiled_flex_attention(
+        if self.training == False:
+            X0_attn_output = dynamic_flex_attention(
                 query=X0_query_states,
                 key=X0_key_states,
                 value=X0_value_states,
@@ -279,7 +279,7 @@ class Qwen3Attention(nn.Module):
                 scaling=self.scaling,  # 使用预定义的缩放因子
                 enable_gqa=enable_gqa,  # 如果 kv heads 少于 q heads，需要启用
             )
-            XT_attn_output = uncompiled_flex_attention(
+            XT_attn_output = dynamic_flex_attention(
                 query=XT_query_states,
                 key=X0_key_states,
                 value=X0_value_states,

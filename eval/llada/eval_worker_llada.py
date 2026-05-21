@@ -124,7 +124,7 @@ class DLLMEvalHarness(LM):
             prefix_ids, target_ids = self._encode_pair(e["prefix"], e["target"])
             input_ids = prefix_ids + target_ids
             labels = [-100] * len(prefix_ids) + target_ids
-            p_len = len(prefix_ids) 
+            p_len = len(prefix_ids)
 
             if len(input_ids) > self.eval_config.max_len:
                 input_ids = input_ids[-self.eval_config.max_len:]

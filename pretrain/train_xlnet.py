@@ -324,6 +324,7 @@ def main():
                 
             # Validation
             if global_step % config.experiment.val_every == 0:
+                model.eval()
                 validate(model, val_dataloader, diff_lm, accelerator, global_step)
                 # if accelerator.is_main_process:
                 #     pre_text, label_text = get_text(logits_pred=logits_pred[0], label_ids=label_ids[0], tokenizer=tokenizer)

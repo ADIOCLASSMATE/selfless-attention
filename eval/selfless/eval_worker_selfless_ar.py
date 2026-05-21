@@ -46,8 +46,7 @@ class DLLMEvalHarness(LM):
         
         # 加载模型和 Tokenizer
         self.model, self.tokenizer = load_model_tokenizer(config=self.eval_config)
-        self.model.train()
-        self.model.gradient_checkpointing_disable()
+        self.model.eval()
         self.diff_lm = DiffusionLanguage(mask_token_id=self.model.config.mask_token_id, config=self.eval_config)
 
         self.device = self.accelerator.device
@@ -72,7 +71,7 @@ class DLLMEvalHarness(LM):
                             
         attention_mask = get_selfless_mask(v_sample=v_sample, seq_len=input_ids.shape[-1], device=self.accelerator.device)
                         
-        logits = self.model(X0_input_ids=input_ids, attention_mask=attention_mask).logits  # shape: [B, L, V]
+        logits = self.model(X0_input_ids=input_ids, attention_mask=attention_mask, calculate_likelihood=True).logits  # shape: [B, L, V]
         
         return logits
 

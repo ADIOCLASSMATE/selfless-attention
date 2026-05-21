@@ -12,8 +12,8 @@
 |---|---|---|
 | 🟥 **HIGH** | **Dream** | LAMBADA-PPL of 209k is a known artifact of Dream's design: the AR-shift convention drops the last input token, so for last-token tasks (LAMBADA's design), the model never sees a [MASK] indicator at the target position. **Dream's LAMBADA-PPL should NOT be cited as a fair comparison point.** WT-PPL is fine. **FIX SHIPPED** in `eval_worker_dream.py`. |
 | 🟧 **MEDIUM** | **Selfless** | Train/eval branching in `Qwen3Model.forward` (line 487-498) is a footgun: eval without explicit `model.train()` returns the wrong stream (X0 instead of XT). `eval_worker_selfless.py` correctly calls `model.train()`, so BPB results ARE correct. But `generate()` uses X0 stream (which the LM head was not trained on) — generation quality may be poorer than BPB suggests. **FIX SHIPPED** in `modeling_selfless.py`. |
-| 🟧 **MEDIUM** | **SDAR** | Eval uses `CE(logits[i], labels[i]=input_ids[i])` with causal attention. **This IS the SDAR convention** (predict current token, MLM-style) — initially I incorrectly flagged this as a bug, but the user clarified that SDAR is trained MLM-style (`logits[i]` predicts `input_ids[i]`, not `input_ids[i+1]`). However, the eval-time causal attention's diagonal lets `hidden[i]` see the actual token at position i, while during training position i had [MASK] input. This is a train-eval distribution mismatch (a soft information leak through the diagonal), not a bug per se. SDAR's 0.913 BPB benefits from this and is not a clean apples-to-apples comparison with PLM models (which strictly disallow self-attention). **No fix needed**; just acknowledge in §Limitations. |
-| 🟧 **MEDIUM** | **All** | The four likelihood estimators (PLM chain-rule for selfless/xlnet, ELBO for llada/dream, CE for sdar, AR-shift for causal LM) are **not strictly comparable bounds**. Cross-method BPB rankings should be reported with this caveat. |
+| ~~🟧 MEDIUM~~ → 🟩 **NONE (RETRACTED)** | **SDAR** | ~~Eval uses `CE(logits[i], labels[i]=input_ids[i])` with causal attention.~~ **CORRECTION (2026-05-20)**: The above analysis was based on an incorrect reading of the code path. The eval worker calls `self.model.train()` (line 48 of `eval_worker_sdar.py`), so `forward()` enters the **training branch** (line 1156), NOT the eval branch (line 1186). The training branch correctly: (1) masks tokens via `forward_add_noise_packed()`, (2) concatenates `[noisy_xt | clean_x0]`, and (3) uses `block_diff_mask` attention (M_BD + M_OBC + M_BC). The noisy half's hidden states at masked positions only see `embed([MASK])` at self-position and cannot attend to the clean half at the same block via M_OBC (requires `block_q > block_kv`). **No diagonal information leak exists in eval.** The original concern was based on the mistaken assumption that eval took the `else` branch (causal LM path at line 1186). SDAR's eval is a faithful ELBO estimator, consistent with training. See §4 for detailed correction. |
+| 🟧 **MEDIUM** | **All** | The four likelihood estimators (PLM chain-rule for selfless/xlnet, ELBO for llada/dream/sdar, AR-shift for causal LM) are **not strictly comparable bounds**. Cross-method BPB rankings should be reported with this caveat. |
 | 🟨 **LOW** | **LLaDA** | High variance in ELBO estimator for short targets (LAMBADA), but the formula is correct. |
 | 🟨 **LOW** | **XLNet, Selfless** | mc_num=32 stderr not reported. eval-mode AR vs random differ in their natural variance budget. |
 | 🟩 **NONE** | **AR / Causal LM** | Standard right-shifted next-token CE. Reference implementation. |
@@ -149,9 +149,43 @@ This explains Dream's catastrophic LAMBADA-PPL (209k at 0.6B, 366k at 250M). The
 
 ---
 
-## 4. SDAR — 🟧 EVAL IS CONSISTENT WITH TRAINING; soft leak via causal diagonal
+## 4. SDAR — ✅ CORRECT (RETRACTED on 2026-05-20)
 
-> **Correction (2026-05-18)**: I initially flagged SDAR's eval as "methodologically unsound" because it doesn't use an AR right-shift. The author corrected this: **SDAR is trained MLM-style** (`logits[i]` predicts `input_ids[i]`, not `input_ids[i+1]`). The training loss uses `target=labels[xt_positions]` where `labels = input_ids.clone()` (no shift), so the LM head learns to predict the **current token at masked positions**. The eval convention (no shift) is therefore consistent with training. The section below reflects this corrected understanding.
+> **Correction (2026-05-18)**: I initially flagged SDAR's eval as "methodologically unsound" because it doesn't use an AR right-shift. The author corrected this: **SDAR is trained MLM-style** (`logits[i]` predicts `input_ids[i]`, not `input_ids[i+1]`). The training loss uses `target=labels[xt_positions]` where `labels = input_ids.clone()` (no shift), so the LM head learns to predict the **current token at masked positions**. The eval convention (no shift) is therefore consistent with training.
+
+> **🔴 CRITICAL CORRECTION (2026-05-20) — "Causal diagonal soft leak" claim is WRONG**:
+> 
+> The previous version of this audit claimed that SDAR eval suffers from a "soft information leak via the causal diagonal" because `hidden[i]` can see `input_ids[i]` itself. **This analysis was based on an incorrect reading of which code path eval takes.**
+> 
+> **What actually happens during SDAR eval:**
+> 
+> 1. `eval_worker_sdar.py:48` calls `self.model.train()` → sets `self.training = True`
+> 2. `get_loglikelihood()` calls `self.model(input_ids, position_ids, labels).loss`
+> 3. In `modeling_sdar.py:1156`, `if self.training:` → enters the **training branch** (lines 1156-1184), NOT the eval branch (lines 1186-1214, which would be pure causal LM forward)
+> 4. The training branch calls `prepare_for_bd_training()` which:
+>    - Calls `forward_add_noise_packed()` — randomly masks non-prompt tokens with `[MASK]`, samples `t ~ U[eps, 1-eps]` per sample
+>    - Creates concatenated input `[noisy_xt | clean_x0]` of length 2L
+>    - Constructs `block_diff_mask` attention (M_BD + M_OBC + M_BC, see below)
+> 5. Loss is computed only at masked positions in the noisy half, using `FusedLinearDiffusionCrossEntropyLoss` with `p_mask` (ELBO) weighting
+> 
+> **Why there is NO diagonal leak:**
+> 
+> The `block_diff_mask` attention pattern (line 286-327):
+> - **M_BD (Block Diagonal)**: `(same block) AND (same x0/xt flag)` — noisy positions within a block attend to each other, but every masked noisy position's input is `embed([MASK])`, so self-attention within the noisy block sees `[MASK]` embeddings, not real tokens
+> - **M_OBC (Offset Block Causal)**: `(noisy query) AND (clean key) AND (query_block > key_block)` — noisy positions attend to clean tokens from **earlier blocks only**. For same-block positions, `block_q == block_kv`, so `block_q > block_kv` is False → **noisy[i] CANNOT see clean[i]** (same logical position in clean half)
+> - **M_BC (Block Causal)**: `(clean query) AND (clean key) AND (query_block >= key_block)` — only applies to clean-half positions attending to other clean positions; irrelevant for loss computation
+> 
+> The diagonal from noisy-half to clean-half at the same position is **strictly blocked** by M_OBC's `block_q > block_kv` requirement. The noisy half at position i can only access clean-half positions from **earlier** blocks (j < i with j in an earlier block), which is the intended block-diffusion design — not a leak.
+> 
+> **The confusion arose from the else branch (lines 1186-1214):**
+> 
+> The `else` branch (taken when `self.training=False`) does indeed use default causal attention with no masking — this path is used by `generate()` (which calls `model.eval()`), NOT by likelihood evaluation. The `loglikelihood()` and `loglikelihood_rolling()` eval paths go through `model.train()` → training branch.
+> 
+> **Conclusion**: SDAR's likelihood evaluation is a faithful ELBO estimator with no information leak. The cross-method comparison concern about "diagonal leak" is invalid. SDAR's BPB numbers (e.g., 0.913) are legitimate and directly comparable to other models' BPB (modulo the general caveat that different methods use different likelihood estimators — see §7).
+
+---
+
+### Original analysis (pre-correction, preserved for reference)
 
 **Training** (`pretrain/train_sdar.py:266-292` + `modeling_sdar.py:1115-1185`):
 
@@ -322,28 +356,28 @@ For the current paper (focused on BPB, LAMBADA-PPL, zero-shot — all use `logli
 | XLNet (AR eval) | Chain-rule under identity permutation | ✓ Yes (one specific chain-rule decomposition) |
 | Selfless (random eval) | Same as XLNet random | ✓ Yes |
 | Selfless (AR eval) | Same as XLNet AR | ✓ Yes |
-| **SDAR** | **MLM-style CE (predict current token at every position, with causal attention)** | ⚠️ Valid in spirit (it's how SDAR is trained), but the causal diagonal during eval is a soft information leak not present in PLM models |
+| **SDAR** | Block-diffusion ELBO (same as training: random masking, concatenated noisy+clean input, `block_diff_mask` attention, loss at masked positions with `p_mask` weighting) | ✓ Yes (Jensen lower bound, same estimator family as LLaDA/Dream). **Retracted**: the "causal diagonal leak" concern was based on a mistaken code-path analysis — eval goes through the training branch, not the causal-LM branch. See §4 correction. |
 
 ### What this means for the paper
 
 **Fair comparisons**:
 - Causal LM ↔ Causal LM ✓
-- LLaDA ↔ Dream (same ELBO formula; Dream had last-token caveat, fix shipped)
+- LLaDA ↔ Dream ↔ SDAR (same ELBO family: all three use random masking + ELBO with `p_mask` weighting; Dream's last-token caveat now fixed)
 - Selfless ↔ XLNet (same chain-rule formula, both AR and random modes)
 - Selfless AR-mode ↔ LLaDA (different estimators but both bound `log P(x)`)
 
 **Comparisons requiring caveat**:
-- Selfless/XLNet/LLaDA ↔ **SDAR**: SDAR's eval uses MLM-style prediction with causal-attention diagonal. The diagonal lets the model "peek at" the target through self-attention, which PLM models strictly disallow. SDAR's 0.913 BPB is partly driven by this asymmetry. To make this apples-to-apples, either (a) evaluate SDAR with strict-no-diagonal attention, or (b) acknowledge the diagonal-leak asymmetry in §Limitations.
 - Dream ↔ anyone on LAMBADA: previously broken; now fixed in `eval_worker_dream.py`. Re-run LAMBADA eval for Dream to get a fair number.
+- **SDAR was previously listed here** (alleged "causal diagonal leak"). **Retracted on 2026-05-20**: SDAR eval uses the training branch (model.train() → self.training=True), which applies proper masking and `block_diff_mask` attention. The diagonal from noisy to clean half at the same block is blocked by M_OBC (`block_q > block_kv`). No information leak exists. SDAR is now in the "fair comparison" group below.
 
 ### Recommendations
 
 1. **Re-run Dream's LAMBADA eval** with the patched `eval_worker_dream.py` (adds an EOS-padded slot at the end so the target isn't dropped). Expect Dream's LAMBADA-PPL to drop from 209k to something in the same ballpark as LLaDA (~1000-3000) or better.
 
-2. **Optional sanity check for SDAR**: implement an alternative eval that masks the causal diagonal (i.e., position i cannot attend to itself). Compare to the current 0.913 BPB. If the no-diagonal eval is substantially worse, document this gap as evidence that SDAR's reported BPB benefits from the diagonal leak.
+2. ~~**Optional sanity check for SDAR**~~ — **RETRACTED (2026-05-20)**. This recommendation was based on the mistaken belief that SDAR eval uses causal attention without masking. In fact, eval uses the training branch with proper masking and `block_diff_mask` attention. No diagonal leak exists. No sanity check needed.
 
 3. **In §Limitations**, write:
-   > "Cross-method BPB comparison uses each method's native likelihood estimator (chain-rule for PLM, ELBO for LLaDA/Dream, MLM-style CE for SDAR, AR for causal LM). These are not strictly comparable lower bounds. In particular, SDAR's eval uses causal attention which provides a soft information leak through the self-attention diagonal — a leak not present in PLM models, where the diagonal is strictly removed (Selfless) or one-sided (XLNet query stream). When comparing SDAR's 0.913 BPB to Selfless's 0.943 (AR mode), part of the 0.030 gap is attributable to this architectural asymmetry rather than to model quality."
+   > "Cross-method BPB comparison uses each method's native likelihood estimator (chain-rule for PLM, ELBO for LLaDA/Dream/SDAR, AR for causal LM). These are not strictly comparable lower bounds. The four estimators differ in their tightness and variance properties."
 
 4. **Refactor Selfless** to always return XT_hidden_states. **FIX SHIPPED** in modified `modeling_selfless.py`. Remove the `model.train()` workaround from eval scripts. **FIX SHIPPED**.
 
@@ -356,7 +390,7 @@ For the current paper (focused on BPB, LAMBADA-PPL, zero-shot — all use `logli
 | AR | A | A | A | A |
 | LLaDA | A | A | B (different bound than AR) | A- |
 | Dream | A | A (was C before fix, now A) | B- (still ELBO-different from PLM) | A- |
-| **SDAR** | A | A (consistent with training MLM convention) | **C** (causal-diagonal eval leak vs PLM's strict no-diagonal) | **B** |
+| **SDAR** | A | A (faithful ELBO via training branch) | B (different bound than PLM/AR, shared with LLaDA/Dream) | A- |
 | XLNet | A | A (robust) | A- (different bound) | A |
 | Selfless | A (before refactor) / A (after) | A (was fragile, now robust) | A- (same as XLNet) | A (after refactor) |
 

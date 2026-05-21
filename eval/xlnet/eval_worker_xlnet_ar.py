@@ -43,8 +43,7 @@ class DLLMEvalHarness(LM):
         self.accelerator = accelerate.Accelerator()
 
         self.model, self.tokenizer = load_model_tokenizer(config=self.eval_config)
-        self.model.train()
-        self.model.gradient_checkpointing_disable()
+        self.model.eval()
         self.diff_lm = DiffusionLanguage(mask_token_id=self.model.config.mask_token_id, config=self.eval_config)
 
         self.device = self.accelerator.device

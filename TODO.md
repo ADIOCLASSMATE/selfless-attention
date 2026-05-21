@@ -115,6 +115,26 @@ C3 ("the model is useful for multiple modes") needs concrete applications, not j
   - Compute time: ~3 hours
   - Owner: ___
 
+- [ ] **C4. MMLU (zero-shot) eval**
+  - Run MMLU on all 0.6B models (Causal LM, Selfless rand/AR, XLNet rand/AR, SDAR, LLaDA, Dream)
+  - This is the single most widely reported pretraining benchmark; 57 subjects across STEM/humanities/social-science
+  - **Goal**: show Selfless leads non-AR models on the most standard downstream benchmark; reviewers will ask for this
+  - Compute time: ~8 hours (8 models × ~1 hour)
+  - Owner: ___
+
+- [ ] **C5. ARC-Challenge eval**
+  - Run ARC-Challenge on all 0.6B models
+  - ARC-Easy has a ceiling effect at 0.6B (Causal LM already at 0.788); ARC-C provides discrimination
+  - **Goal**: verify Selfless's accuracy advantage holds on a harder science QA benchmark
+  - Compute time: ~2 hours
+  - Owner: ___
+
+- [ ] **C6. Drop non-discriminating benchmarks**
+  - Remove GPQA Diamond, TruthfulQA, OpenBookQA from the 0.6B/250M eval suite
+  - These are too hard for small models (Causal LM scores: GPQA 0.283, TQA-MC1 0.215) or redundant (OpenBookQA ≈ ARC-E + SciQ)
+  - Replace with MMLU + ARC-Challenge; net runtime change ≈ neutral
+  - Owner: ___
+
 ---
 
 ## §D. Tier-2 → Tier-3 reach (OPTIONAL, ~3-4 weeks, BIG RISK/REWARD)

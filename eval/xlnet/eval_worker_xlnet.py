@@ -44,14 +44,13 @@ class DLLMEvalHarness(LM):
         '''
         super().__init__()
         self.eval_config = OmegaConf.load(config_path)
-
+        
         # 初始化 Accelerator
         self.accelerator = accelerate.Accelerator()
         
         # 加载模型和 Tokenizer
         self.model, self.tokenizer = load_model_tokenizer(config=self.eval_config)
-        self.model.train()
-        self.model.gradient_checkpointing_disable()
+        self.model.eval()
         self.diff_lm = DiffusionLanguage(mask_token_id=self.model.config.mask_token_id, config=self.eval_config)
 
         self.device = self.accelerator.device

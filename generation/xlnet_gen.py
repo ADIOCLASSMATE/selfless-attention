@@ -17,7 +17,6 @@ from models.modeling_model.modeling_xlnet import Qwen3ForCausalLM
 if __name__ == "__main__":
     model_path = "output/xlnet-250M-50BT/hf_model-final"
     model = Qwen3ForCausalLM.from_pretrained(model_path, trust_remote_code=True, dtype=torch.bfloat16).to("cuda")
-    model.config.use_flex_attention = True
     # XLNet always creates XT stream (independent of training mode),
     # and generate() internally uses dual-stream attention with
     # query_attention_mask (strict v_kv > v_q) and kv_attention_mask (v_kv >= v_q)

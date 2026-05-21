@@ -11,7 +11,6 @@ from models.modeling_model.modeling_llada import Qwen3ForCausalLM
 if __name__ == "__main__":
     model_path = "output_final/llada-from_scratch-80BT/hf_model-final"
     model = Qwen3ForCausalLM.from_pretrained(model_path, trust_remote_code=True, dtype=torch.bfloat16).to("cuda")
-    model.config.use_flex_attention = True
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True, fix_mistral_regex=True)
     model.config.mask_token_id = tokenizer.mask_token_id

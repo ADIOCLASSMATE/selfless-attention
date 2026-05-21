@@ -1,6 +1,6 @@
 experiment:
-    project: "xlnet-0.6B-50BT"
-    name: "xlnet"
+    project: "sdar-342M-50BT"
+    name: "sdar"
     wandb_project: "selfless-attention"
     output_dir: "output"
     save_every: 100
@@ -14,10 +14,11 @@ experiment:
     resume_from_checkpoint: none
 
 model:
-    model_path: "public/models/Qwen/Qwen3-0.6B-Base"
+    model_path: "public/models/Qwen/Qwen3-342M-Custom"
     attention_task: "random"
     loss_task: "likelihood"
-    mask_id: -1 # we will replace this id in the training script
+    mask_token_id: null  # SDAR specific: will be automatically set by load_model_tokenizer (adds <|mdm_mask|> token)
+    block_size: 4  # SDAR specific: block size for block diffusion attention mask
 
 dataset:
     class_name: "ArrowDataset"

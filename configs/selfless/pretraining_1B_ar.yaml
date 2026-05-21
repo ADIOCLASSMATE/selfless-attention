@@ -18,7 +18,6 @@ model:
     attention_task: "ar"
     loss_task: "likelihood"
     mask_id: -1 # we will replace this id in the training script
-    use_flex_attention: true
 
 dataset:
     class_name: "ArrowDataset"

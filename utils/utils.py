@@ -91,30 +91,15 @@ def load_model_tokenizer(config: OmegaConf, logger=None):
     elif "dream" in project.lower():
         from models.modeling_model.modeling_dream import Qwen3ForCausalLM
         model_class = Qwen3ForCausalLM
-    elif "mad" in project.lower():
-        from models.modeling_model.modeling_mad import Qwen3ForCausalLM
-        model_class = Qwen3ForCausalLM
-    elif "dam" in project.lower():
-        from models.modeling_model.modeling_dam import Qwen3ForCausalLM
-        model_class = Qwen3ForCausalLM
-    elif "pnts" in project.lower():
-        from models.modeling_model.modeling_pnts import Qwen3ForCausalLM
-        model_class = Qwen3ForCausalLM
     elif "xlnet" in project.lower():
         from models.modeling_model.modeling_xlnet import Qwen3ForCausalLM
         model_class = Qwen3ForCausalLM
-    elif "selfless" in project.lower() or "sigma" in project.lower():
+    elif "selfless" in project.lower():
         from models.modeling_model.modeling_selfless import Qwen3ForCausalLM
         model_class = Qwen3ForCausalLM
     elif "causal" in project.lower() or "ar" in project.lower():
         from models.modeling_model.modeling_ar import Qwen3ForCausalLM
         model_class = Qwen3ForCausalLM
-    elif "omega" in project.lower():
-        raise ValueError(
-            f"Project name '{project}' contains 'omega'. "
-            f"OMEGA has been renamed to Selfless Attention. "
-            f"Please rename your project to use 'selfless' instead."
-        )
     else:
         raise ValueError
     
@@ -126,7 +111,6 @@ def load_model_tokenizer(config: OmegaConf, logger=None):
         model_config = AutoConfig.from_pretrained(config.model.model_path, trust_remote_code=True)
         # 更新 model.config
         model_config.mask_token_id = config.model.mask_token_id
-        model_config.use_flex_attention = config.model.use_flex_attention
         model_config.eos_token_id = tokenizer.eos_token_id
         # 设置 im_end_token_id
         if hasattr(tokenizer, 'im_end_token_id') and tokenizer.im_end_token_id is not None:
@@ -151,7 +135,6 @@ def load_model_tokenizer(config: OmegaConf, logger=None):
             trust_remote_code=True
         )
         model.config.mask_token_id = config.model.mask_token_id
-        model.config.use_flex_attention = config.model.use_flex_attention
         model.config.eos_token_id = tokenizer.eos_token_id
         # 设置 im_end_token_id
         if hasattr(tokenizer, 'im_end_token_id') and tokenizer.im_end_token_id is not None:

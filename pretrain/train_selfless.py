@@ -323,6 +323,7 @@ def main():
                 
             # Validation
             if global_step % config.experiment.val_every == 0:
+                model.eval()
                 validate(model, val_dataloader, diff_lm, accelerator, global_step)
                 # if accelerator.is_main_process:
                 #     pre_text, label_text = get_text(logits_pred=logits_pred[0], label_ids=label_ids[0], tokenizer=tokenizer)
@@ -361,6 +362,7 @@ def validate(model, val_dataloader, diff_lm, accelerator, global_step):
             X0_input_ids=text_ids,
             labels=text_ids,
             attention_mask=diffusion_attention_mask,
+            calculate_likelihood=True
         ).loss
         
         local_total_loss_diff += loss_diff.detach() * current_batch_size
@@ -370,6 +372,7 @@ def validate(model, val_dataloader, diff_lm, accelerator, global_step):
             X0_input_ids=text_ids,
             labels=text_ids,
             attention_mask=AR_mask,
+            calculate_likelihood=True
         ).loss
         
         local_total_loss_ar += loss_ar.detach() * current_batch_size

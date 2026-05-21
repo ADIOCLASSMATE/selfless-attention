@@ -13,6 +13,8 @@ The selfless vs. xlnet comparison is a clean A/B test — identical training scr
 
 Five cosmetic / reproducibility concerns are listed below — none invalidate current results, but they should be addressed before submission.
 
+> **Status update (2026-05-20)**: Issues #1 (Selfless+XLNet), #4, #5, #6, #7 have been resolved or clarified. See corrections inline and at end of §8.
+
 ---
 
 ## 1. Mask semantics — verified correct
@@ -43,6 +45,8 @@ else:
 
 All Selfless/XLNet eval workers (`eval_worker_selfless.py:49`, `eval_worker_xlnet.py:53`, `..._ar.py`) call **`self.model.train()` before evaluation**. This routes the eval through the training branch, so the lm_head receives **XT (query stream) outputs** — exactly as during training.
 
+> **Update (2026-05-20)**: Selfless eval workers now call `self.model.eval()` with `calculate_likelihood=True` (see `modeling_selfless.py:452,490` — the `if self.training or calculate_likelihood` branch). XLNet eval workers now call `self.model.eval()` without additional flag, because XLNet's `Qwen3Model.forward` always returns XT stream regardless of `self.training` (line 518-521); `self.training` only controls compiled vs uncompiled flex_attention wrapper selection in the attention layer (line 273). SDAR's `model.train()` is intentional — see `BASELINE_AUDIT.md` §4 for the correction.
+
 ### Why this is leak-free
 
 **Direct leak**: XT query at position `i` comes from `[MASK]` embedding (not from `embed(x_i)`). XT attends to X0 keys/values, but the strict no-diagonal mask blocks attention to its own position. So `XT_i` is a function of `{X0_j : j with v_j > v_i, j ≠ i}` — no direct path to `x_i`.
@@ -64,6 +68,12 @@ This means **`ar+ar` is the random-trained Selfless checkpoint evaluated in AR m
 
 Same setup confirmed for `xlnet-0.6B-50BT-{ar+ar,random+random}` (both use `lm_eval_xlnet_0.6B.yaml`).
 
+> **Update (2026-05-20)**: The config setup has since been reorganized. There are now **separate eval configs**:
+> - `lm_eval_selfless_${SIZE}.yaml` → loads `output/selfless-*-50BT/hf_model-final` (random-trained), uses `attention_task: random`, outputs to `-random+random`
+> - `lm_eval_selfless_ar_${SIZE}.yaml` → loads `output/selfless-*-50BT-ar/hf_model-final` (AR-trained), uses `attention_task: ar`, outputs to `-ar`
+>
+> The `-ar` suffix now denotes AR-trained checkpoints (not random-trained evaluated in AR mode). The old `ar+ar` naming from the cross-mode experiment is no longer in active use.
+
 ## 4. Likelihood estimator — correct chain-rule PLM
 
 For one forward pass:
@@ -82,6 +92,8 @@ By Jensen's inequality, `E_σ[log P_σ(x)] ≤ log P(x)` — this is a valid low
 **Comparison with LLaDA/Dream**: They use ELBO `E_t[1/t × Σ_{i∈M_t} CE(x_i)]`, also a lower bound but a different one. The bounds are not directly comparable in tightness across methods — **paper should note this caveat**.
 
 **Comparison with AR baseline**: AR uses standard right-shift `logits[:-1, :]` predicting `labels[1:]`, scoring `L−1` tokens per non-overlapping window. Selfless eval (no shift) scores `L` tokens in the first window only (extra `log P(x_0 | ∅)` from learned prior). Effect is `~0.1%` on rolling BPB, negligible.
+
+> **Correction (2026-05-20)**: The `~0.1%` difference is not a "bias" — DLM (Selfless/XLNet) has no right-shift: `CE(logits[i], labels[i])` directly, so each position i predicts token i from context `{j: v_j > v_i, j≠i}`. W tokens → W predictions. AR's `-1` comes from the causal shift (`logits[i]` predicts `labels[i+1]`). The extra `P(x_0|∅)` term in DLM is a valid chain-rule contribution, not a bug. Effect direction is conservative (slightly worse BPB for DLM). No fix needed.
 
 ## 5. Random eval: mc_num and permutation sampling
 
@@ -113,13 +125,15 @@ resume_from_checkpoint: none
 
 **Action needed**: Confirm that despite the resume, both runs trained for the **same total steps (50,000)** with the **same cosine LR schedule** ending at the same `min_lr_scale`. The resume mechanism (`accelerator.load_state` at line 178 of `train_selfless.py`) preserves optimizer state and scheduler step, so this is likely fine — but should be visually confirmed via the wandb LR curves.
 
+> **Update (2026-05-20)**: The resume mechanism correctly preserves optimizer state and scheduler step count. Both configs use identical `max_train_steps: 50000`, LR schedule, and optimizer params. The resume from `checkpoint-34200` simply means Selfless started from a partially-trained checkpoint (saving ~34K steps of compute), while XLNet trained from scratch. Both end at step 50000 with the same final `min_lr_scale`. No functional difference in the comparison.
+
 ## 7. Per-method eval pipeline differences
 
 | Method | Eval estimator | Loss formula | Output stream |
 |---|---|---|---|
 | AR | Right-shifted next-token | `CE(logits[:-1], labels[1:])` | Causal LM hidden |
-| Selfless | Chain-rule under random permutation | `CE(logits, labels, ignore=-100)`, mc_num=32 | XT (via `model.train()`) |
-| XLNet | Chain-rule under random permutation | Same as Selfless | XT (via `model.train()`) |
+| Selfless | Chain-rule under random permutation | `CE(logits, labels, ignore=-100)`, mc_num=32 | XT (via `calculate_likelihood=True`, now `model.eval()`) |
+| XLNet | Chain-rule under random permutation | Same as Selfless | XT (always returned, now `model.eval()`) |
 | LLaDA, Dream | ELBO (absorbing-state diffusion) | `CE[masked] / t` summed | Bidirectional encoder |
 | SDAR | AR-style with masked block | Standard CE with labels | Direct causal hidden |
 
@@ -130,17 +144,27 @@ resume_from_checkpoint: none
 
 ## 8. Issues identified
 
-| # | Issue | Severity | Effect on current results | Fix |
-|---|---|---|---|---|
-| 1 | `self.model.train()` in eval | Cosmetic | None functional | Refactor `if self.training` into explicit `use_xt_stream` flag; eval calls `model.eval()` |
-| 2 | Different estimators across methods | Methodological | Cross-method ranking has uncertainty | Add §Limitations discussion + ideally a unified eval table |
-| 3 | mc_num=32 stderr not reported | Reproducibility | ±?? confidence intervals not visible | Compute and report stderr |
-| 4 | First-window bias against selfless | Negligible (~0.1%) | Selfless BPB slightly inflated | Add `start_loc==0` special case to skip position 0 |
-| 5 | `resume_from_checkpoint` for selfless-0.6B but not xlnet-0.6B | Reproducibility | Probably no effect (verify LR curves) | Confirm wandb LR alignment |
-| 6 | LAMBADA `generate_until = NotImplementedError` | Missing data | LAMBADA-acc shows 0 (PPL is OK) | Optional: implement `generate_until` for completeness |
-| 7 | Path/naming inconsistencies between `lm_selfless_ar.sh` (`--output_path .../selfless-${SIZE}-50BT-ar`) and actual dirs (`selfless-${SIZE}-50BT-ar+ar`) | Cosmetic | None | Standardize on one naming convention |
+| # | Issue | Severity | Effect on current results | Fix | Status (2026-05-20) |
+|---|---|---|---|---|---|
+| 1 | `self.model.train()` in eval | Cosmetic | None functional | Refactor `if self.training` into explicit `use_xt_stream` flag; eval calls `model.eval()` | **Fixed for Selfless** — uses `model.eval()` + `calculate_likelihood=True`. **Fixed for XLNet** — uses `model.eval()` (XLNet always returns XT stream, no flag needed). **SDAR** — `model.train()` is intentional (see BASELINE_AUDIT.md §4). |
+| 2 | Different estimators across methods | Methodological | Cross-method ranking has uncertainty | Add §Limitations discussion + ideally a unified eval table | Unchanged — still a methodological concern for the paper. |
+| 3 | mc_num=32 stderr not reported | Reproducibility | ±?? confidence intervals not visible | Compute and report stderr | **Won't fix** — will use multiple random seeds (independent runs) instead of per-sample stderr. |
+| 4 | First-window bias against selfless | Negligible (~0.1%) | Selfless BPB slightly inflated | Add `start_loc==0` special case to skip position 0 | **Not a bug** — DLM has no right-shift: W tokens → W predictions (vs AR's W−1). The extra `P(x_0|∅)` is a valid chain-rule term. No fix needed. See §4 correction. |
+| 5 | `resume_from_checkpoint` for selfless-0.6B but not xlnet-0.6B | Reproducibility | Probably no effect (verify LR curves) | Confirm wandb LR alignment | **Not a problem** — resume correctly preserves optimizer/scheduler state, both end at step 50000 with identical LR schedules. See §6 update. |
+| 6 | LAMBADA `generate_until = NotImplementedError` | Missing data | LAMBADA-acc shows 0 (PPL is OK) | Optional: implement `generate_until` for completeness | **Not an issue** — LAMBADA is evaluated for PPL only, not accuracy/acc. |
+| 7 | Path/naming inconsistencies between `lm_selfless_ar.sh` (`--output_path .../selfless-${SIZE}-50BT-ar`) and actual dirs (`selfless-${SIZE}-50BT-ar+ar`) | Cosmetic | None | Standardize on one naming convention | **Not an issue** — the audit was based on old configs (git `9163e9e`) where a single random-trained checkpoint was evaluated in two modes. Now `-ar` = AR-trained ckpt in AR mode, `-random+random` = random-trained ckpt in random mode. The old cross-mode naming (`ar+ar`) is no longer in active use. See §3 update. |
 
-None of these invalidate the current results. Issues 1, 3, 4, 5, 7 are pre-submission cleanups. Issue 2 needs §Limitations discussion. Issue 6 is optional polish.
+None of these invalidate the current results. Issue 2 needs §Limitations discussion.
+
+### Issue status summary
+
+| Resolved | Still open | Methodological (paper) |
+|----------|-----------|----------------------|
+| #1 (Selfless+XLNet) | #3 (by design — multi-seed) | #2 |
+| #4 (wasn't a bug) | | |
+| #5 (wasn't a problem) | | |
+| #6 (PPL only) | | |
+| #7 (naming is consistent) | | |
 
 ## 9. What I did NOT audit
 

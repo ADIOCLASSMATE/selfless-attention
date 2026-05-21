@@ -169,8 +169,8 @@ def compiled_flex_attention(query, key, value, attention_mask, scaling, enable_g
     mode="default",
     dynamic=True
 )  
-def dynamic_flex_attention(query, key, value, attention_mask, scaling, enable_gqa):
-    """自适应tokens长度的 flex_attention 包装函数"""
+def uncompiled_flex_attention(query, key, value, attention_mask, scaling, enable_gqa):
+    """不适用编译优化的 flex_attention 包装函数"""
     return flex_attention(
         query=query,
         key=key,
@@ -224,7 +224,7 @@ class Qwen3Attention(nn.Module):
         input_shape = X0_hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
             
-        XT_query_states = self.q_norm(self.q_proj(XT_hidden_states).view(hidden_shape)).transpose(1, 2) if XT_hidden_states is not None else None
+        XT_query_states = self.q_norm(self.q_proj(XT_hidden_states).view(hidden_shape)).transpose(1, 2) if self.training else None
         
         X0_query_states = self.q_norm(self.q_proj(X0_hidden_states).view(hidden_shape)).transpose(1, 2)
         X0_key_states = self.k_norm(self.k_proj(X0_hidden_states).view(hidden_shape)).transpose(1, 2)
@@ -241,8 +241,8 @@ class Qwen3Attention(nn.Module):
         # 检查是否需要 GQA (Grouped Query Attention)
         enable_gqa = self.config.num_attention_heads != self.config.num_key_value_heads
         
-        if self.training == False:
-            X0_attn_output = dynamic_flex_attention(
+        if self.config.use_flex_attention == False or self.training == False:
+            X0_attn_output = uncompiled_flex_attention(
                 query=X0_query_states,
                 key=X0_key_states,
                 value=X0_value_states,
@@ -250,14 +250,14 @@ class Qwen3Attention(nn.Module):
                 scaling=self.scaling,  # 使用预定义的缩放因子
                 enable_gqa=enable_gqa,  # 如果 kv heads 少于 q heads，需要启用
             )
-            XT_attn_output = dynamic_flex_attention(
+            XT_attn_output = uncompiled_flex_attention(
                 query=XT_query_states,
                 key=X0_key_states,
                 value=X0_value_states,
                 attention_mask=attention_mask,  # 直接传入 BlockMask
                 scaling=self.scaling,  # 使用预定义的缩放因子
                 enable_gqa=enable_gqa,  # 如果 kv heads 少于 q heads，需要启用
-            ) if XT_query_states is not None else None
+            ) if self.training else None
             attn_weights = None
         else:
             # 调用 flex_attention
@@ -276,15 +276,15 @@ class Qwen3Attention(nn.Module):
                 attention_mask=attention_mask,  # 直接传入 BlockMask
                 scaling=self.scaling,  # 使用预定义的缩放因子
                 enable_gqa=enable_gqa,  # 如果 kv heads 少于 q heads，需要启用
-            ) if XT_query_states is not None else None
+            ) if self.training else None
             attn_weights = None
         
         # attn_output 形状: (batch, heads, seq_len, head_dim)
         # 需要转换回 (batch, seq_len, hidden_size)
         X0_attn_output = X0_attn_output.transpose(1, 2).reshape(*input_shape, -1).contiguous()
-        XT_attn_output = XT_attn_output.transpose(1, 2).reshape(*input_shape, -1).contiguous() if XT_attn_output is not None else None
+        XT_attn_output = XT_attn_output.transpose(1, 2).reshape(*input_shape, -1).contiguous() if self.training else None
         X0_attn_output = self.o_proj(X0_attn_output)
-        XT_attn_output = self.o_proj(XT_attn_output) if XT_attn_output is not None else None
+        XT_attn_output = self.o_proj(XT_attn_output) if self.training else None
         
         return X0_attn_output, XT_attn_output, attn_weights
 
@@ -315,9 +315,9 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.Tensor:
         X0_residual = X0_hidden_states
-        XT_residual = XT_hidden_states if XT_hidden_states is not None else None
+        XT_residual = XT_hidden_states if self.training else None
         X0_hidden_states = self.input_layernorm(X0_hidden_states)
-        XT_hidden_states = self.input_layernorm(XT_hidden_states) if XT_hidden_states is not None else None
+        XT_hidden_states = self.input_layernorm(XT_hidden_states) if self.training else None
         # Self Attention
         X0_hidden_states, XT_hidden_states, _ = self.self_attn(
             X0_hidden_states=X0_hidden_states,
@@ -331,17 +331,17 @@ class Qwen3DecoderLayer(GradientCheckpointingLayer):
             **kwargs,
         )
         X0_hidden_states = X0_residual + X0_hidden_states
-        XT_hidden_states = XT_residual + XT_hidden_states if XT_hidden_states is not None else None
+        XT_hidden_states = XT_residual + XT_hidden_states if self.training else None
 
         # Fully Connected
         X0_residual = X0_hidden_states
-        XT_residual = XT_hidden_states if XT_hidden_states is not None else None
+        XT_residual = XT_hidden_states if self.training else None
         X0_hidden_states = self.post_attention_layernorm(X0_hidden_states)
-        XT_hidden_states = self.post_attention_layernorm(XT_hidden_states) if XT_hidden_states is not None else None
+        XT_hidden_states = self.post_attention_layernorm(XT_hidden_states) if self.training else None
         X0_hidden_states = self.mlp(X0_hidden_states)
-        XT_hidden_states = self.mlp(XT_hidden_states) if XT_hidden_states is not None else None
+        XT_hidden_states = self.mlp(XT_hidden_states) if self.training else None
         X0_hidden_states = X0_residual + X0_hidden_states
-        XT_hidden_states = XT_residual + XT_hidden_states if XT_hidden_states is not None else None
+        XT_hidden_states = XT_residual + XT_hidden_states if self.training else None
         return X0_hidden_states, XT_hidden_states
 
 
@@ -430,17 +430,14 @@ class Qwen3Model(Qwen3PreTrainedModel):
         X0_inputs_embeds: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        calculate_likelihood: Optional[bool] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
         r"""
         Args:
-            X0_input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Indices of input sequence tokens in the vocabulary.
-            attention_mask (`BlockMask`, *optional*):
-                Attention mask for Flex Attention. Should be a block mask of shape `(batch_size, sequence_length)`.
-            calculate_likelihood (`bool`, *optional*):
-                Whether to calculate the likelihood of the input sequence. If `True`, the model will compute the likelihood using the XT stream, which is necessary for training. If `False`, the model will only compute the hidden states for the X0 stream, which can be used for efficient decoding.
+            time_sample (`torch.Tensor` of shape `(batch_size, sequence_length + 1)`, *optional*):
+                Time sampling tensor for diffusion-causal attention. Each element represents the diffusion time step
+                for the corresponding token. Tokens with larger time values cannot attend to tokens with smaller time
+                values. The first element should be 1.1 to ensure all tokens can attend to the first position.
         """
         if (X0_input_ids is None) ^ (X0_inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
@@ -449,7 +446,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         if X0_inputs_embeds is None:
             X0_inputs_embeds = self.embed_tokens(X0_input_ids)
-        if self.training or calculate_likelihood:
+        if self.training:
             if self.XT_input_ids is None or self.XT_input_ids.shape[-1] != X0_input_ids.shape[-1]:
                 self.XT_input_ids = torch.full_like(X0_input_ids, self.config.mask_token_id)
             XT_inputs_embeds = self.embed_tokens(self.XT_input_ids)
@@ -487,16 +484,16 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 **kwargs,
             )
 
-        if self.training or calculate_likelihood:
-            XT_hidden_states = self.norm(XT_hidden_states)
-            return BaseModelOutputWithPast(
-                last_hidden_state=XT_hidden_states,
-                past_key_values=past_key_values if use_cache else None,
-            )
-        else:
+        if not self.training:
             X0_hidden_states = self.norm(X0_hidden_states)
             return BaseModelOutputWithPast(
                 last_hidden_state=X0_hidden_states,
+                past_key_values=past_key_values if use_cache else None,
+            )
+        else:
+            XT_hidden_states = self.norm(XT_hidden_states)
+            return BaseModelOutputWithPast(
+                last_hidden_state=XT_hidden_states,
                 past_key_values=past_key_values if use_cache else None,
             )
 
@@ -529,26 +526,33 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
-        calculate_likelihood: bool = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> CausalLMOutputWithPast:
         r"""
-        Args:
-            X0_input_ids (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Indices of input sequence tokens in the vocabulary. The input sequence should be formatted as
-                `[X0_1, X0_2, ..., X0_n]`, where `X0_i` represents the tokens at diffusion time step 0 for the i-th
-                position. All tokens in `X0_input_ids` should have the same diffusion time step (i.e., all should be
-                from the same "diffusion slice"). If `inputs_embeds` is not provided, this argument will be used to
-                compute the input embeddings.
-            attention_mask (`BlockMask`, *optional*):
-                Attention mask for diffusion-causal attention. Should be a block mask of shape `(batch_size,
-                sequence_length)` where each block corresponds to a diffusion time step. The mask should be designed
-                such that tokens can only attend to tokens from the same or earlier diffusion time steps, and not to
-                tokens from later diffusion time steps.
-            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Labels for language modeling. Tokens with labels set to -100 will be ignored when computing the loss.
-            calculate_likelihood (`bool`, *optional*, defaults to `False`):
-                Whether to calculate the likelihood of the input sequence. If `True`, the model will compute the likelihood using the XT stream, which is necessary for training. If `False`, the model will only compute the hidden states for the X0 stream, which can be used for efficient decoding. Note that when `calculate_likelihood` is `True`, the model will return the likelihood loss in the `loss` field of the output, and the `logits` field will contain the logits from the XT stream.
+        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+            config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+            (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+        
+        time_sample (`torch.Tensor` of shape `(batch_size, sequence_length + 1)`, *optional*):
+                Time sampling tensor for diffusion-causal attention. Each element represents the diffusion time step
+                for the corresponding token. Tokens with larger time values cannot attend to tokens with smaller time
+                values. The first element should be 1.1 to ensure all tokens can attend to the first position.
+        Example:
+
+        ```python
+        >>> from transformers import AutoTokenizer, Qwen3ForCausalLM
+
+        >>> model = Qwen3ForCausalLM.from_pretrained("Qwen/Qwen3-8B")
+        >>> tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
+
+        >>> prompt = "Hey, are you conscious? Can you talk to me?"
+        >>> inputs = tokenizer(prompt, return_tensors="pt")
+
+        >>> # Generate
+        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
+        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
         outputs: BaseModelOutputWithPast = self.model(
             X0_input_ids=X0_input_ids,
@@ -558,7 +562,6 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             cache_position=cache_position,
-            calculate_likelihood=calculate_likelihood,
             **kwargs,
         )
 
@@ -582,6 +585,76 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
     @torch.compile(mode="max-autotune-no-cudagraphs")
     def loss_function(self, logits, labels, ignore_index, reduction='mean'):
         return F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=ignore_index, reduction=reduction)
+    
+    # def forward_process(
+    #     self,
+    #     X0_input_ids, 
+    #     labels,
+    #     attention_mask,
+    #     return_logits=False,
+    # ):
+    #     logits = self.forward(X0_input_ids=X0_input_ids, attention_mask=attention_mask).logits  # shape: [B, L, V]
+
+    #     loss = self.loss_function(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-100)
+    
+    #     if return_logits:
+    #         return loss, logits.detach()
+    #     else:
+    #         return loss
+        
+    # def forward_process_inference(
+    #     self,
+    #     input_ids, 
+    #     labels,
+    #     p_mask,
+    #     masked_indices,
+    #     attention_mask=None,
+    #     return_logits=False,
+    # ):
+    #     logits = self.forward(X0_input_ids=input_ids, attention_mask=attention_mask).logits  # shape: [B, L, V]
+        
+    #     loss = self.loss_function(
+    #         logits[masked_indices],
+    #         labels[masked_indices],
+    #         ignore_index=-100,
+    #         reduction='none',
+    #     )
+    #     loss = loss / p_mask[masked_indices]
+    #     loss = loss.sum() / (labels.shape[0] * labels.shape[1])
+        
+    #     if return_logits:
+    #         return loss, logits.detach()
+    #     else:
+    #         return loss 
+        
+        
+    # def forward_process_sft(
+    #     self,
+    #     X0_input_ids,
+    #     labels,
+    #     attention_mask,
+    #     return_logits=False,
+    # ):
+    #     logits = self.forward(X0_input_ids=X0_input_ids, attention_mask=attention_mask).logits  # shape: [B, L, V]
+    #     # 使用 reduction='none' 获取每个token的loss，然后对每个样本求平均，再对batch求平均
+    #     # 这样每个样本的贡献是相等的，而不是每个token的贡献相等
+    #     loss_per_token =  self.loss_function(
+    #         logits.view(-1, logits.size(-1)), 
+    #         labels.view(-1), 
+    #         ignore_index=-100,
+    #         reduction='none'
+    #     )  # shape: [B*L]
+    #     loss_per_token = loss_per_token.view(labels.shape)  # shape: [B, L]
+    #     # 对每个样本求平均（忽略-100的token）
+    #     valid_mask = (labels != -100).float()  # shape: [B, L]
+    #     loss_per_sample = (loss_per_token * valid_mask).sum(dim=1) / valid_mask.sum(dim=1).clamp(min=1)  # shape: [B]
+    #     # 对所有样本求平均
+    #     loss = loss_per_sample.mean()
+        
+    #     if return_logits:
+    #         return loss, logits.detach()
+    #     else:
+    #         return loss
         
     @torch.no_grad()
     def generate(self, prompt_ids, gen_length, num_response=1, prompt_task='ar', block_size=4, temperature=1.0, ratio=None, parallel_rate=None, decode_strategy='confidence'):

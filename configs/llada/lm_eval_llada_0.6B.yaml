@@ -9,7 +9,6 @@ output_path: "./output_eval"
 model:
   model_path: "output/llada-0.6B-50BT/hf_model-final" 
   attention_task: random
-  use_flex_attention: true
 
 training:
   use_gradient_checkpointing: false

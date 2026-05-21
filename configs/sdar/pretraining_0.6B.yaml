@@ -19,7 +19,6 @@ model:
     attention_task: "random"
     loss_task: "likelihood"
     mask_token_id: null  # SDAR specific: will be automatically set by load_model_tokenizer (adds <|mdm_mask|> token)
-    use_flex_attention: true
     block_size: 4  # SDAR specific: block size for block diffusion attention mask
 
 dataset:

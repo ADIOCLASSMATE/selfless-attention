@@ -7,8 +7,8 @@ SCRIPT_NAME="eval/llada/eval_worker_llada.py"
 CONFIG_PATH="./configs/llada/lm_eval_llada_${SIZE}.yaml"
 
 # 核心逻辑与常识
-TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrande,boolq,sciq,truthfulqa_mc1,truthfulqa_mc2,gpqa_diamond_zeroshot,super-glue-lm-eval-v1"
-# TASKS="wikitext"
+# TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrande,boolq,sciq,truthfulqa_mc1,truthfulqa_mc2,gpqa_diamond_zeroshot,super-glue-lm-eval-v1"
+TASKS="lambada_openai"
 # TASKS="paloma_c4_en,paloma_falcon-refinedweb"
 
 # ===========================================

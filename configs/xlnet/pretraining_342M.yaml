@@ -1,5 +1,5 @@
 experiment:
-    project: "xlnet-0.6B-50BT"
+    project: "xlnet-342M-50BT"
     name: "xlnet"
     wandb_project: "selfless-attention"
     output_dir: "output"
@@ -14,10 +14,10 @@ experiment:
     resume_from_checkpoint: none
 
 model:
-    model_path: "public/models/Qwen/Qwen3-0.6B-Base"
+    model_path: "public/models/Qwen/Qwen3-342M-Custom"
     attention_task: "random"
     loss_task: "likelihood"
-    mask_id: -1 # we will replace this id in the training script
+    mask_id: -1
 
 dataset:
     class_name: "ArrowDataset"

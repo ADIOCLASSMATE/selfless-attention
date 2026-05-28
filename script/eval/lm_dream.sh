@@ -19,7 +19,7 @@ TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrand
 
 uv run accelerate launch --num_processes 8 $SCRIPT_NAME \
     --model dllm \
-    --model_args config_path=$CONFIG_PATH \
+    --model_args config_path=$CONFIG_PATH  \
     --tasks $TASKS \
     --batch_size 1 \
     --output_path "./output_eval/dream-${SIZE}-50BT" \

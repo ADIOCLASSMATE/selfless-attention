@@ -9,7 +9,7 @@ SCRIPT_DIR="$(dirname "$0")"
 
 # 默认评测 250M 和 0.6B
 if [ $# -eq 0 ]; then
-    SIZES=("250M" "0.6B")
+    SIZES=("342M")
 else
     SIZES=("$@")
 fi
@@ -25,9 +25,16 @@ fi
 #     "xlnet"
 #     "xlnet_ar"
 # )
+# TYPES=(
+#     "ar"
+#     "dream"
+#     "llada"
+#     "sdar"
+#     "selfless"
+#     "xlnet"
+# )
 TYPES=(
     "ar"
-    "dream"
     "llada"
     "sdar"
     "selfless"

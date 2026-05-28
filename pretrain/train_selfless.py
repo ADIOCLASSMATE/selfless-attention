@@ -38,7 +38,7 @@ def main():
     #      SETUP Config     #
     #########################
     config = get_config()
-        
+    
     total_batch_size_per_gpu = config.training.batch_size
     
     config.experiment.output_dir = os.path.join(config.experiment.output_dir, config.experiment.project)

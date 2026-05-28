@@ -1,0 +1,7 @@
+experiment:
+  project: "ar-342M-50BT-lm-eval"
+
+max_len: 2048
+
+model:
+  model_path: "output/ar-342M-50BT/hf_model-final" 

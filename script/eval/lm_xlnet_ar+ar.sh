@@ -4,16 +4,14 @@ export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
 SIZE=${1:-"342M"}
 VARIANT=${2:-""}  # optional: "preload"
-SCRIPT_NAME="eval/ar/eval_worker_ar.py"
-
+SCRIPT_NAME="eval/xlnet/eval_worker_xlnet.py"
 if [ -n "$VARIANT" ]; then
-    CONFIG_PATH="./configs/ar/lm_eval_ar_${SIZE}_${VARIANT}.yaml"
-    OUTPUT_NAME="ar-${SIZE}-50BT-${VARIANT}"
+    CONFIG_PATH="./configs/xlnet/lm_eval_xlnet_${SIZE}_ar+ar_${VARIANT}.yaml"
+    OUTPUT_NAME="xlnet-${SIZE}-50BT-ar+ar-${VARIANT}"
 else
-    CONFIG_PATH="./configs/ar/lm_eval_ar_${SIZE}.yaml"
-    OUTPUT_NAME="ar-${SIZE}-50BT"
+    CONFIG_PATH="./configs/xlnet/lm_eval_xlnet_${SIZE}_ar+ar.yaml"
+    OUTPUT_NAME="xlnet-${SIZE}-50BT-ar+ar"
 fi
-
 TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrande,boolq,sciq,truthfulqa_mc1,truthfulqa_mc2,gpqa_diamond_zeroshot,super-glue-lm-eval-v1,arc_challenge,paloma_c4_en,paloma_falcon-refinedweb,paloma_wikitext_103"
 cd "$(dirname "$0")/../.."
 if [ ! -f "$CONFIG_PATH" ]; then

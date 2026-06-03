@@ -2,12 +2,12 @@
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
-SIZE=${1:-"250M"}
+SIZE=${1:-"342M"}
 SCRIPT_NAME="eval/selfless/eval_worker_selfless.py"
 CONFIG_PATH="./configs/selfless/lm_eval_selfless_${SIZE}.yaml"
-TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrande,boolq,sciq,truthfulqa_mc1,truthfulqa_mc2,gpqa_diamond_zeroshot,super-glue-lm-eval-v1"
+TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrande,boolq,sciq,truthfulqa_mc1,truthfulqa_mc2,gpqa_diamond_zeroshot,super-glue-lm-eval-v1,arc_challenge,paloma_c4_en,paloma_falcon-refinedweb,paloma_wikitext_103"
 cd "$(dirname "$0")/../.."
-accelerate launch --num_processes 8 $SCRIPT_NAME \
+uv run accelerate launch --num_processes 8 $SCRIPT_NAME \
     --model dllm \
     --model_args config_path=$CONFIG_PATH \
     --tasks $TASKS \

@@ -1,0 +1,16 @@
+experiment:
+  project: "llada-0.6B-50BT-preload-lm-eval"
+
+max_len: 2048
+mc_num: 32
+batch_size: 32
+output_path: "./output_eval"
+
+model:
+  model_path: "output/llada-0.6B-50BT-preload/hf_model-final"
+  attention_task: random
+
+training:
+  use_gradient_checkpointing: false
+  from_scratch: false
+  prompt_task: random

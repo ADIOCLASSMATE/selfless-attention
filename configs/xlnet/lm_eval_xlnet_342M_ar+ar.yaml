@@ -1,5 +1,5 @@
 experiment:
-  project: "selfless-0.6B-50BT-ar-lm-eval"
+  project: "xlnet-342M-50BT-ar+ar-lm-eval"
 
 max_len: 2048
 mc_num: 1
@@ -7,7 +7,7 @@ batch_size: 1
 output_path: "./output_eval"
 
 model:
-  model_path: "output/selfless-0.6B-50BT-ar/hf_model-final" 
+  model_path: "output/xlnet-342M-50BT/hf_model-final"
   attention_task: ar
   use_flex_attention: false
 

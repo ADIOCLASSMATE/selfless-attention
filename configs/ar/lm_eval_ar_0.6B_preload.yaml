@@ -1,0 +1,7 @@
+experiment:
+  project: "ar-0.6B-50BT-preload-lm-eval"
+
+max_len: 2048
+
+model:
+  model_path: "output/ar-0.6B-50BT-preload/hf_model-final" 

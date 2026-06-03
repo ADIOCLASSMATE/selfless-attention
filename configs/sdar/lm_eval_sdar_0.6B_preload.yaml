@@ -1,0 +1,18 @@
+experiment:
+  project: "sdar-0.6B-50BT-preload-lm-eval"
+
+max_len: 2048
+mc_num: 32
+batch_size: 32
+output_path: "./output_eval"
+
+model:
+  model_path: "output/sdar-0.6B-50BT-preload/hf_model-final"
+  attention_task: random
+  use_flex_attention: false
+  block_size: 4
+
+training:
+  use_gradient_checkpointing: false
+  from_scratch: false
+

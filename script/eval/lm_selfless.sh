@@ -2,15 +2,31 @@
 export HF_DATASETS_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export HF_HUB_OFFLINE=1
-SIZE=${1:-"250M"}
+SIZE=${1:-"342M"}
+VARIANT=${2:-""}  # optional: "preload"
 SCRIPT_NAME="eval/selfless/eval_worker_selfless.py"
-CONFIG_PATH="./configs/selfless/lm_eval_selfless_${SIZE}.yaml"
-TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrande,boolq,sciq,truthfulqa_mc1,truthfulqa_mc2,gpqa_diamond_zeroshot,super-glue-lm-eval-v1"
+if [ -n "$VARIANT" ]; then
+    CONFIG_PATH="./configs/selfless/lm_eval_selfless_${SIZE}_${VARIANT}.yaml"
+    OUTPUT_NAME="selfless-${SIZE}-50BT-random+random-${VARIANT}"
+else
+    CONFIG_PATH="./configs/selfless/lm_eval_selfless_${SIZE}.yaml"
+    OUTPUT_NAME="selfless-${SIZE}-50BT-random+random"
+fi
+TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrande,boolq,sciq,truthfulqa_mc1,truthfulqa_mc2,gpqa_diamond_zeroshot,super-glue-lm-eval-v1,arc_challenge,paloma_c4_en,paloma_falcon-refinedweb,paloma_wikitext_103"
 cd "$(dirname "$0")/../.."
+if [ ! -f "$CONFIG_PATH" ]; then
+    echo "Missing eval config: $CONFIG_PATH" >&2
+    exit 1
+fi
+MODEL_PATH=$(awk -F'"' '/^[[:space:]]*model_path:/ {print $2; exit}' "$CONFIG_PATH")
+if [ -n "$MODEL_PATH" ] && [ ! -d "$MODEL_PATH" ]; then
+    echo "Missing model path from config: $MODEL_PATH" >&2
+    exit 1
+fi
 uv run accelerate launch --num_processes 8 $SCRIPT_NAME \
     --model dllm \
     --model_args config_path=$CONFIG_PATH \
     --tasks $TASKS \
     --batch_size 1 \
-    --output_path "./output_eval/selfless-${SIZE}-50BT-random+random" \
+    --output_path "./output_eval/${OUTPUT_NAME}" \
     --log_samples

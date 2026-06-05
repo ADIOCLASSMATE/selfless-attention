@@ -1,76 +1,47 @@
-# Selfless Attention — Updated Research Documents
+# Selfless Attention — 项目文档索引
 
-**Generated**: 2026-05-18
-**Trigger**: Reanalysis after confirming "ar+ar" eval = random-trained checkpoint in AR mode (single checkpoint, two eval modes)
+**最后更新**: 2026-06-04（基于 `output_eval/` 中 24 个真实 run 的重分析与重构）
 
 ---
 
-## What's in this bundle
+## 一句话主张（thesis）
 
-| File | Purpose | Replaces |
+PLM（Permutation Language Modeling）自 2019 年起被认为只能做理解、不能做生成，根因是 XLNet 的双流注意力让生成变得别扭。我们指出：**双流的真正约束来自 content 流的残差泄露，而这个约束只在训练期必需**。一行 mask 改动（两条流都去掉对角线，即 *Selfless Attention*）即可在推理/生成时坍缩成单流。由此 PLM 第一次能与扩散语言模型（DLM）正面对比，并在下游任务上全面胜出——尽管它的原生 BPB 更差，而我们证明这个 BPB 差距是**估计量假象**，不是建模缺陷。
+
+---
+
+## 文档结构（共 4 个，替代原来的 7 个）
+
+| 文档 | 作用 | 读它来回答 |
 |---|---|---|
-| **PLAN.md** | Reframed research plan from "SOTA flexible-order BPB" to "expressiveness vs ordering-robustness tradeoff" | Old PLAN.md (2026-04-29) |
-| **TODO.md** | Concrete actionable experiment list, ordered by priority and tier impact | (new) |
-| **THRESHOLDS.md** | Tier mapping updated to actual current data (Tier 1 secure, Tier 2 reachable) | Old THRESHOLDS.md |
-| **RESULTS_SUMMARY.md** | Master tables of all current eval results, derived quantities, what's proven and what's not | (new) |
-| **CODE_AUDIT.md** | Audit of training and eval code — confirms no functional bugs, lists 5 cosmetic items + 1 config to verify | (new) |
+| **README.md**（本文件） | 索引、主张、现状 | 这项目在做什么？现在到哪一步？ |
+| **PAPER_PLAN.md** | 故事线、三个 contribution、单流定理、逐节写作大纲、诚实定位、Related Work、Reviewer Q&A | paper 怎么写？卖点是什么？ |
+| **RESULTS.md** | 基于真实 JSON 的全部指标表、已证明 / 未证明清单 | 数据到底说了什么？ |
+| **EXPERIMENTS.md** | 按杠杆排序的待办实验 + 理由 | 接下来该跑什么？ |
+
+阅读顺序：**README → RESULTS（先看清数据）→ PAPER_PLAN（再定故事）→ EXPERIMENTS（最后排活）**。
 
 ---
 
-## How to use this bundle
+## 当前状态
 
-1. **Read RESULTS_SUMMARY.md first** — gives you the up-to-date picture of what your data actually shows.
-
-2. **Read CODE_AUDIT.md** — confirms the code logic is sound and lists the small cleanups needed before submission.
-
-3. **Read PLAN.md** — the new paper framing. Major changes:
-   - The "SOTA flexible-order BPB" claim is gone (data doesn't support it).
-   - The new C1 is the **expressiveness vs ordering-robustness tradeoff** — supported by the (AR − random) eval-mode gap data and the zero-shot dominance result.
-   - The new C3 emphasizes the **single-checkpoint multi-mode** demonstration AND the **downstream zero-shot dominance among non-AR models**.
-   - LAMBADA-PPL is featured as a "Selfless is the only non-AR model within an order of magnitude of causal LM" headline.
-
-4. **Read TODO.md** — what to do next, week by week.
-
-5. **Read THRESHOLDS.md** — to track your tier progression as experiments come in.
+- **训练**: 50B tokens FineWeb-Edu，Qwen3 架构，8×H200，全方法同 schedule。
+- **尺度**: 342M（仅 from-scratch）+ 0.6B（from-scratch 与 preload 两种初始化）。`preload` = 从 HF Qwen3-0.6B-Base 权重初始化。
+- **评测**: 24 个 run 已完成（LM: WikiText/LAMBADA/Paloma-C4/WT103/Falcon；下游 11 项）。MMLU 在此尺度无意义，已确认不评。
+- **核心代码**: `models/modeling_model/modeling_{selfless,xlnet}.py`、`utils/utils.py` 的 `get_selfless_mask` / `get_xlnet_mask`、各族 `eval/.../eval_worker_*.py`。代码逻辑经审计无功能性 bug。
 
 ---
 
-## The reframing in one sentence
+## 三大主张速览（详见 PAPER_PLAN.md）
 
-Old: "Selfless removes a 6-year-old bug; PLM achieves SOTA on flexible-order generation."
-
-New: "Selfless reveals a previously-unrecognized **expressiveness vs ordering-robustness tradeoff** in two-stream attention design; the same random-trained checkpoint excels at AR-mode generation and downstream zero-shot tasks (best among non-AR models), but loses some flexible-order BPB to DLMs — a tradeoff inherent to relational vs anchored representations."
-
----
-
-## Critical actions BEFORE next step
-
-These are cheap and should happen before any new experiment:
-
-1. **Verify the resume_from_checkpoint did not break the LR schedule** for selfless-0.6B
-   - Pull up the wandb LR curves for selfless-0.6B and xlnet-0.6B
-   - Confirm they're aligned at step 50,000
-   - If not aligned: this is a confound, you'll need to rerun selfless-0.6B from scratch
-
-2. **Run the Var(h_i) across permutations experiment** (TODO §A1)
-   - Without this, the new C1 framing is hand-waving
-   - Cheap (<2 hours)
-   - If `Var_Selfless > Var_XLNet`: C1 confirmed, story is solid
-   - If not: the framing needs another revision
-
-3. **Run a quick mc_num stderr check** (TODO §C3)
-   - Specifically for the 0.6B random-mode regression (Selfless 0.971 vs XLNet 0.963)
-   - If the stderr is > 0.008, the regression isn't significant single-seed
-   - This determines whether you NEED multi-seed (expensive) or can proceed without
+1. **C1（架构 + 理论）** — Selfless 去掉两条流的对角线，解锁**单流推理与生成**；XLNet 因 content 流含对角线，推理时结构上必须维持两条流。有可证明的信息流命题支撑。
+2. **C2（实证 + insight）** — PLM 在 WikiText-BPB 上劣于 DLM，但在 LAMBADA-PPL 与下游 11 项上大幅胜出。该 dissociation 在 **两个尺度、两种初始化下都成立**。BPB 不可跨族比较：统一估计量后 DLM 的优势反转。
+3. **C3（受控消融）** — 在同架构下，Selfless 与 XLNet **建模质量持平**，但 Selfless 额外获得单流能力。**注意：不主张 Selfless 质量更好**（见下）。
 
 ---
 
-## Open question for you
+## 相比旧文档的关键修正
 
-The original PLAN.md had a clear "selfish shortcut bug" framing. The new framing is more nuanced ("tradeoff"). **Make sure you're comfortable with the nuance** before pitching this to advisors or collaborators — it's a softer claim than the original but it's a claim that the data actually supports.
-
-Some people will prefer the original "bug we fixed" framing even if the data is weaker, because it's more clickable. I'd advise honesty over clickability — but it's your decision.
-
----
-
-*Generated as part of code audit and replan session, 2026-05-18.*
+- **删除"Selfless 下游优于 XLNet"主线**。真实数据：from-scratch 下 Selfless 微赢 0.007，preload 下 XLNet 反超 0.007，符号翻转且远小于 per-task stderr——是噪声。旧 PLAN.md 的 "expressiveness vs ordering-robustness tradeoff" 主线建立在这个噪声上，已废弃。
+- **新主线** = 单流推理（C1）+ PLM vs DLM 的 BPB-下游 dissociation（C2）。这两条都稳。
+- **"DLM 低 BPB = 过拟合" 改写为 "估计量不可比"**（见 RESULTS.md / PAPER_PLAN.md），后者 reviewer 驳不倒。

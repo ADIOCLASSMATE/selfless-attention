@@ -5,3 +5,7 @@ max_len: 2048
 
 model:
   model_path: "output/ar-342M-50BT/hf_model-final" 
+
+training:
+  use_gradient_checkpointing: false
+  from_scratch: false

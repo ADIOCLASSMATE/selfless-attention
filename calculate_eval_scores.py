@@ -10,6 +10,7 @@ file, builds a combined analysis JSON, and writes SVG bar charts.
 import argparse
 import json
 import re
+import shutil
 import statistics
 import sys
 from datetime import datetime
@@ -110,6 +111,7 @@ SUMMARY_METRIC_DIRECTIONS = {
 }
 
 RESULTS_RE = re.compile(r"results_(?P<timestamp>.+)\.json$")
+MODEL_SIZE_RE = re.compile(r"(?<![A-Za-z0-9])(?P<size>\d+(?:\.\d+)?[BM])(?=-|_|$)", re.IGNORECASE)
 
 
 def warn(message: str) -> None:
@@ -439,6 +441,40 @@ def collect_comparison(runs: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def add_group(
+    groups: Dict[str, Dict[str, List[str]]],
+    group_type: str,
+    group_name: str,
+    run_name: str,
+) -> None:
+    groups.setdefault(group_type, {}).setdefault(group_name, []).append(run_name)
+
+
+def collect_comparison_groups(runs: Dict[str, Any]) -> Dict[str, Any]:
+    grouped_run_names: Dict[str, Dict[str, List[str]]] = {}
+
+    for run_name, run in runs.items():
+        metadata = run["metadata"]
+        add_group(grouped_run_names, "model_groups", metadata["model_group"], run_name)
+
+    comparison_groups = {}
+    for group_type, groups in grouped_run_names.items():
+        comparison_groups[group_type] = {}
+        group_order = {"342M": 0, "0.6B": 1, "0.6B-preload": 2}
+        for group_name, run_names in sorted(
+            groups.items(),
+            key=lambda item: (group_order.get(item[0], 99), item[0]),
+        ):
+            subset = {run_name: runs[run_name] for run_name in sorted(run_names)}
+            comparison_groups[group_type][group_name] = {
+                "run_count": len(subset),
+                "runs": list(subset),
+                "comparison": collect_comparison(subset),
+            }
+
+    return comparison_groups
+
+
 def format_value(value: float) -> str:
     if abs(value) >= 100:
         return f"{value:.2f}"
@@ -449,6 +485,27 @@ def format_value(value: float) -> str:
 
 def safe_filename(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.+-]+", "_", name).strip("_") or "chart"
+
+
+def parse_run_metadata(run_name: str) -> Dict[str, Any]:
+    size_match = MODEL_SIZE_RE.search(run_name)
+    model_size = size_match.group("size") if size_match else "unknown_size"
+    preload = run_name.endswith("-preload") or run_name.endswith("_preload")
+    base_name = re.sub(r"[-_]preload$", "", run_name)
+    if size_match:
+        model_family = run_name[: size_match.start()].rstrip("-_") or run_name.split("-")[0]
+    else:
+        model_family = run_name.split("-")[0]
+    model_group = f"{model_size}-preload" if preload else model_size
+
+    return {
+        "model_family": model_family,
+        "model_size": model_size,
+        "model_group": model_group,
+        "preload": preload,
+        "preload_label": "preload" if preload else "no_preload",
+        "base_name": base_name,
+    }
 
 
 def bar_color(higher_is_better: Optional[bool]) -> str:
@@ -549,30 +606,33 @@ def write_index_html(path: Path, chart_paths: Dict[str, List[str]], analysis_jso
     path.write_text(html, encoding="utf-8")
 
 
-def write_visualizations(analysis: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
-    plots_dir = output_dir / "plots"
-    summary_dir = plots_dir / "summary"
-    tasks_dir = plots_dir / "tasks"
+def write_comparison_visualizations(
+    comparison: Dict[str, Any],
+    output_dir: Path,
+    title_prefix: str,
+) -> Dict[str, List[str]]:
+    summary_dir = output_dir / "summary"
+    tasks_dir = output_dir / "tasks"
     summary_dir.mkdir(parents=True, exist_ok=True)
     tasks_dir.mkdir(parents=True, exist_ok=True)
 
     summary_charts = []
-    for metric_name, group in analysis["comparison"]["summary_metrics"].items():
+    for metric_name, group in comparison["summary_metrics"].items():
         scores = group["scores"]
         if not scores:
             continue
         chart_path = summary_dir / f"{safe_filename(metric_name)}.svg"
         write_bar_svg(
             chart_path,
-            f"Summary: {metric_name}",
+            f"{title_prefix} / Summary: {metric_name}",
             scores,
             higher_is_better=group.get("higher_is_better"),
             metric_name=metric_name,
         )
-        summary_charts.append(chart_path.relative_to(output_dir).as_posix())
+        summary_charts.append(chart_path)
 
     task_charts = []
-    for task_name, group in analysis["comparison"]["task_scores"].items():
+    for task_name, group in comparison["task_scores"].items():
         scores = group["scores"]
         if not scores:
             continue
@@ -580,29 +640,58 @@ def write_visualizations(analysis: Dict[str, Any], output_dir: Path) -> Dict[str
         chart_path = tasks_dir / f"{safe_filename(task_name)}.svg"
         write_bar_svg(
             chart_path,
-            f"Task: {task_name}",
+            f"{title_prefix} / Task: {task_name}",
             scores,
             higher_is_better=group.get("higher_is_better"),
             metric_name=metric_name,
         )
-        task_charts.append(chart_path.relative_to(output_dir).as_posix())
-
-    index_path = output_dir / "index.html"
-    analysis_json = "analysis.json"
-    write_index_html(
-        index_path,
-        {
-            "Summary Bars": summary_charts,
-            "Task Bars": task_charts,
-        },
-        analysis_json,
-    )
+        task_charts.append(chart_path)
 
     return {
-        "index_html": index_path.as_posix(),
         "summary_bar_charts": summary_charts,
         "task_bar_charts": task_charts,
     }
+
+
+def write_visualizations(analysis: Dict[str, Any], output_dir: Path) -> Dict[str, Any]:
+    plots_dir = output_dir / "plots"
+    if plots_dir.exists():
+        shutil.rmtree(plots_dir)
+    plots_dir.mkdir(parents=True, exist_ok=True)
+
+    visualizations: Dict[str, Any] = {}
+    index_sections: Dict[str, List[str]] = {}
+
+    for group_type, groups in analysis["comparison_groups"].items():
+        visualizations[group_type] = {}
+        for group_name, group_data in groups.items():
+            group_dir = plots_dir / safe_filename(group_type) / safe_filename(group_name)
+            charts = write_comparison_visualizations(
+                group_data["comparison"],
+                group_dir,
+                f"{group_type}: {group_name}",
+            )
+            relative_summary = [
+                path.relative_to(output_dir).as_posix()
+                for path in charts["summary_bar_charts"]
+            ]
+            relative_tasks = [
+                path.relative_to(output_dir).as_posix()
+                for path in charts["task_bar_charts"]
+            ]
+            visualizations[group_type][group_name] = {
+                "summary_bar_charts": relative_summary,
+                "task_bar_charts": relative_tasks,
+            }
+            index_sections[f"{group_type} / {group_name} / Summary"] = relative_summary
+            index_sections[f"{group_type} / {group_name} / Tasks"] = relative_tasks
+
+    index_path = output_dir / "index.html"
+    analysis_json = "analysis.json"
+    write_index_html(index_path, index_sections, analysis_json)
+
+    visualizations["index_html"] = index_path.as_posix()
+    return visualizations
 
 
 def build_directory_analysis(
@@ -619,6 +708,7 @@ def build_directory_analysis(
         results = load_results(result_file)
         run_output = build_single_result(results, requested_tasks)
         runs[run_name] = {
+            "metadata": parse_run_metadata(run_name),
             "result_file": result_file.as_posix(),
             "result_timestamp": parse_result_timestamp(result_file).isoformat(),
             **run_output,
@@ -630,10 +720,10 @@ def build_directory_analysis(
         "requested_tasks": requested_tasks,
         "run_count": len(runs),
         "runs": runs,
-        "comparison": {},
+        "comparison_groups": {},
         "visualizations": {},
     }
-    analysis["comparison"] = collect_comparison(runs)
+    analysis["comparison_groups"] = collect_comparison_groups(runs)
     analysis["visualizations"] = write_visualizations(analysis, output_dir)
     return analysis
 

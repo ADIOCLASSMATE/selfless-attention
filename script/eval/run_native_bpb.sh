@@ -88,9 +88,9 @@ CONFIGS=(
   configs/dream/lm_eval_dream_0.6B_preload.yaml
   configs/sdar/lm_eval_sdar_0.6B_preload.yaml
   configs/selfless/lm_eval_selfless_0.6B_preload.yaml
-  configs/selfless/lm_eval_selfless_0.6B_preload_ar+ar.yaml
+  configs/selfless/lm_eval_selfless_0.6B_ar+ar_preload.yaml
   configs/xlnet/lm_eval_xlnet_0.6B_preload.yaml
-  configs/xlnet/lm_eval_xlnet_0.6B_preload_ar+ar.yaml
+  configs/xlnet/lm_eval_xlnet_0.6B_ar+ar_preload.yaml
 )
 
 for cfg in "${CONFIGS[@]}"; do

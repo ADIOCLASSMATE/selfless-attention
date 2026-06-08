@@ -1,141 +1,209 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-text_likelihood.py — 各族“理论 native” BPB（每个族自己的估计量）
-=================================================================
+viz_likelihood.py — BPB 结果可视化（兼容现有 unified 结果 + native 结果）
 
-设计：零重写、最大忠实。
-  - 每个族的 native 估计量（AR 链式 / PLM permutation-ELBO / LLaDA·Dream 吸收态 ELBO /
-    SDAR block-diffusion ELBO）已经实现在它各自的 eval worker 的 `loglikelihood_rolling` 里
-    —— 那也正是 output_eval 里 lm_eval 报的 native bits_per_byte 的来源。
-  - 本脚本直接 **实例化对应 worker、调它自己的 loglikelihood_rolling** 在我们的语料上跑，
-    拿回整段 total loglik（nats），再用 **我们自己的 UTF-8 字节数** 换成 BPB。
-  - 语料加载复用 unified_lr_bpb.load_corpus；worker 的 rolling 用 stride=max_len//2 滑窗
-    （与 unified_lr_bpb 完全一致）→ native 与 unified 的 Δ 协议干净（消除原来 lm_eval 字节口径
-    带来的 +0.04 偏移）。
+读取 output_eval/likelihood_long.csv（由 collect_likelihood.py 生成）。
+产出（output_eval/plots_likelihood/）：
+  1) estimator_bars__<ds>__<scale>_<init>.png
+     每 (dataset,scale,init)：x=family，分组柱=各 estimator(native/lr_g1/lr_g2/lr_g4)。
+     直观看 native↔L→R 差异、以及 g 的并行解码税。
+  2) parallel_tax__<ds>__<scale>_<init>.png
+     DLM(sdar/llada/dream) 的 BPB 随解码粒度 g(1→2→4) 变化曲线（并行解码税）。
+  3) bpb_vs_acc__<ds>__<scale>_<init>.png
+     x=lr_g1 BPB，y=下游 11 任务平均 acc（从 output_eval 的 lm_eval harness 结果读取）。
+     —— 新 C2 的核心图：公平估计量下 BPB 与下游 acc 的反相关。
 
-输出：output_eval/{project}/native_bpb_{时间戳}.json，schema 与 unified_lr_bpb 对齐
-（estimator="native"，值字段 native_bpb），供 collect / 可视化统一读取。
-
-用法（仓库根目录，单卡）：
-  CUDA_VISIBLE_DEVICES=0 python eval/text_likelihood.py \
-      --config configs/llada/lm_eval_llada_0.6B.yaml \
-      --hf_dataset wikitext --hf_config wikitext-2-raw-v1 --hf_split test
-  # 或本地语料： --text_file data/paloma_c4_en_test.txt
-
-注意（PLM 的 native = permutation-ELBO，用 random-mode 配置）：
-  selfless/xlnet 的 native BPB 要用它们的 *random* 配置（如 lm_eval_selfless_0.6B.yaml，
-  attention_task=random），而不是 unified 用的 _ar+ar 配置——两者同一份权重，区别只在 eval 模式。
-  这样 native 才对应 PLM 的随机顺序 ELBO（= RESULTS.md 的 native 列）。
-
-【务必验证】首次运行后，本脚本算出的 native BPB 应当（在我们字节口径下）与 lm_eval/RESULTS.md
-的 native bits_per_byte 同序、近值。对不上就说明 worker 实例化或语料口径有出入，先排查再信任。
+用法（仓库根目录）：python viz_likelihood.py
+依赖：matplotlib, numpy（缺失会给出提示并跳过绘图）。
 """
-import os
-import sys
-import json
-import math
-import argparse
-import importlib.util
-from types import SimpleNamespace
-from datetime import datetime
+import os, glob, json, csv, re
+from collections import defaultdict
 
-import torch
+ROOT = "./output_eval"
+OUT = os.path.join(ROOT, "plots_likelihood")
+FAM_ORDER = ["ar", "selfless", "xlnet", "sdar", "llada", "dream"]
+DLM = {"sdar", "llada", "dream"}
+EST_ORDER = ["native", "lr_g1", "lr_g2", "lr_g4"]
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE)
-sys.path.insert(0, ROOT)
-
-from omegaconf import OmegaConf
-from eval.unified_lr_bpb import load_corpus, detect_family, LN2  # 复用同一套语料/字节口径
-
-# family -> worker 模块文件（每个都定义 @register_model("dllm") class DLLMEvalHarness(LM)）
-WORKER_FILE = {
-    "ar":       "eval/ar/eval_worker_ar.py",
-    "llada":    "eval/llada/eval_worker_llada.py",
-    "dream":    "eval/dream/eval_worker_dream.py",
-    "sdar":     "eval/sdar/eval_worker_sdar.py",
-    "selfless": "eval/selfless/eval_worker_selfless.py",
-    "xlnet":    "eval/xlnet/eval_worker_xlnet.py",
-}
+# 与 RESULTS.md 一致的下游任务/指标
+ACC_TASKS = [("arc_easy", "acc_norm,none"), ("arc_challenge", "acc_norm,none"),
+             ("hellaswag", "acc_norm,none"), ("piqa", "acc_norm,none"),
+             ("sciq", "acc,none"), ("winogrande", "acc,none"),
+             ("openbookqa", "acc_norm,none"), ("boolq", "acc,none"),
+             ("copa", "acc,none"), ("wic", "acc,none"), ("sglue_rte", "acc,none")]
 
 
-def load_worker_class(family):
-    """按文件路径导入对应 worker 模块，取出 DLLMEvalHarness 类。
-    一次只导入一个族，避免多个模块同时 @register_model('dllm') 冲突。"""
-    path = os.path.join(ROOT, WORKER_FILE[family])
-    spec = importlib.util.spec_from_file_location(f"eval_worker_{family}", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.DLLMEvalHarness
+def parse(proj_key):
+    fam = ("selfless" if "selfless" in proj_key else "xlnet" if "xlnet" in proj_key else
+           "llada" if "llada" in proj_key else "dream" if "dream" in proj_key else
+           "sdar" if "sdar" in proj_key else "ar")
+    scale = "342M" if "342M" in proj_key else "0.6B"
+    init = "preload" if "preload" in proj_key else "scratch"
+    return scale, fam, init
+
+
+def load_long():
+    p = os.path.join(ROOT, "likelihood_long.csv")
+    if not os.path.exists(p):
+        raise SystemExit("缺 likelihood_long.csv，先跑 collect_likelihood.py")
+    rows = []
+    for r in csv.DictReader(open(p)):
+        try:
+            r["bpb"] = float(r["bpb"])
+        except (ValueError, TypeError):
+            continue
+        rows.append(r)
+    return rows
+
+
+def load_downstream_acc():
+    """从 output_eval 的 lm_eval harness 结果读 11 任务平均 acc。
+    返回 {(scale,family,init): acc_avg}。PLM 优先用 random+random 目录。"""
+    cand = defaultdict(dict)   # (scale,fam,init) -> {dirname: acc}
+    for d in sorted(os.listdir(ROOT)):
+        sub = os.path.join(ROOT, d)
+        if not os.path.isdir(sub) or d.endswith("-lm-eval"):
+            continue
+        fs = glob.glob(os.path.join(sub, "*", "results_*.json"))
+        if not fs:
+            continue
+        try:
+            res = json.load(open(sorted(fs)[-1])).get("results", {})
+        except Exception:
+            continue
+        vals = []
+        for t, k in ACC_TASKS:
+            v = res.get(t, {}).get(k)
+            if isinstance(v, (int, float)):
+                vals.append(v)
+        if not vals:
+            continue
+        scale, fam, init = parse(d)
+        cand[(scale, fam, init)][d] = sum(vals) / len(vals)
+
+    acc = {}
+    for key, dct in cand.items():
+        fam = key[1]
+        pick = None
+        if fam in ("selfless", "xlnet"):
+            for name in dct:
+                if "random+random" in name or name.endswith("random"):
+                    pick = name
+                    break
+        if pick is None:
+            pick = max(dct, key=dct.get) if dct else None
+        if pick:
+            acc[key] = dct[pick]
+    return acc
+
+
+def _setup():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    os.makedirs(OUT, exist_ok=True)
+    return plt, np
+
+
+def groups_present(rows):
+    return sorted({(r["dataset"], r["scale"], r["init"]) for r in rows})
+
+
+def plot_estimator_bars(rows, plt, np):
+    for ds, scale, init in groups_present(rows):
+        sel = [r for r in rows if r["dataset"] == ds and r["scale"] == scale and r["init"] == init]
+        tab = defaultdict(dict)
+        for r in sel:
+            tab[r["family"]][r["estimator"]] = r["bpb"]
+        fams = [f for f in FAM_ORDER if f in tab]
+        ests = [e for e in EST_ORDER if any(e in tab[f] for f in fams)]
+        if not fams or not ests:
+            continue
+        x = np.arange(len(fams)); w = 0.8 / max(1, len(ests))
+        fig, ax = plt.subplots(figsize=(max(6, 1.3 * len(fams)), 4.2))
+        for i, e in enumerate(ests):
+            ys = [tab[f].get(e, np.nan) for f in fams]
+            ax.bar(x + i * w, ys, w, label=e)
+        ax.set_xticks(x + w * (len(ests) - 1) / 2)
+        ax.set_xticklabels(fams)
+        ax.set_ylabel("BPB (lower = better)")
+        ax.set_title(f"{ds} | {scale} ({init}) — native vs unified L→R")
+        ax.legend(fontsize=8)
+        ax.grid(axis="y", alpha=0.3)
+        fig.tight_layout()
+        p = os.path.join(OUT, f"estimator_bars__{ds}__{scale}_{init}.png")
+        fig.savefig(p, dpi=150); plt.close(fig)
+        print("  ->", p)
+
+
+def plot_parallel_tax(rows, plt, np):
+    for ds, scale, init in groups_present(rows):
+        fig, ax = plt.subplots(figsize=(5.2, 4))
+        any_line = False
+        for fam in ["sdar", "llada", "dream"]:
+            pts = []
+            for g in (1, 2, 4):
+                m = [r for r in rows if r["dataset"] == ds and r["scale"] == scale
+                     and r["init"] == init and r["family"] == fam and r["estimator"] == f"lr_g{g}"]
+                if m:
+                    pts.append((g, m[0]["bpb"]))
+            if len(pts) >= 2:
+                xs, ys = zip(*pts)
+                ax.plot(xs, ys, "o-", label=fam); any_line = True
+        if not any_line:
+            plt.close(fig); continue
+        ax.set_xticks([1, 2, 4]); ax.set_xlabel("decode granularity g")
+        ax.set_ylabel("unified L→R BPB")
+        ax.set_title(f"{ds} | {scale} ({init}) — parallel-decoding tax")
+        ax.legend(); ax.grid(alpha=0.3); fig.tight_layout()
+        p = os.path.join(OUT, f"parallel_tax__{ds}__{scale}_{init}.png")
+        fig.savefig(p, dpi=150); plt.close(fig)
+        print("  ->", p)
+
+
+def plot_bpb_vs_acc(rows, acc, plt, np):
+    if not acc:
+        print("  [skip] 没读到下游 acc（output_eval 里没有 harness results_*.json）")
+        return
+    for ds, scale, init in groups_present(rows):
+        pts = []
+        for fam in FAM_ORDER:
+            m = [r for r in rows if r["dataset"] == ds and r["scale"] == scale
+                 and r["init"] == init and r["family"] == fam and r["estimator"] == "lr_g1"]
+            a = acc.get((scale, fam, init))
+            if m and a is not None:
+                pts.append((fam, m[0]["bpb"], a))
+        if len(pts) < 3:
+            continue
+        fig, ax = plt.subplots(figsize=(5.2, 4.4))
+        for fam, b, a in pts:
+            ax.scatter(b, a, s=60)
+            ax.annotate(fam, (b, a), textcoords="offset points", xytext=(5, 4), fontsize=8)
+        # 相关系数
+        bs = np.array([p[1] for p in pts]); accs = np.array([p[2] for p in pts])
+        r = float(np.corrcoef(bs, accs)[0, 1]) if len(pts) > 2 else float("nan")
+        ax.set_xlabel("unified L→R BPB (g=1, lower=better)")
+        ax.set_ylabel("downstream acc avg (higher=better)")
+        ax.set_title(f"{ds} | {scale} ({init}) — BPB vs acc  (r={r:+.2f})")
+        ax.grid(alpha=0.3); fig.tight_layout()
+        p = os.path.join(OUT, f"bpb_vs_acc__{ds}__{scale}_{init}.png")
+        fig.savefig(p, dpi=150); plt.close(fig)
+        print("  ->", p)
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", required=True, help="lm_eval yaml（同 worker；PLM 用 random 配置）")
-    ap.add_argument("--text_file", default=None)
-    ap.add_argument("--hf_dataset", default=None)
-    ap.add_argument("--hf_config", default=None)
-    ap.add_argument("--hf_split", default="test")
-    ap.add_argument("--limit", type=int, default=None)
-    args = ap.parse_args()
-
-    cfg = OmegaConf.load(args.config)
-    project = cfg.experiment.project
-    family = detect_family(project)
-    print(f"[text_likelihood] project={project} | family={family} | "
-          f"mc_num={cfg.get('mc_num')} | max_len={cfg.get('max_len')}")
-
-    # 实例化对应 worker（它内部用 accelerate.Accelerator() 单进程即可，无需 accelerate launch）
-    WorkerCls = load_worker_class(family)
-    worker = WorkerCls(config_path=args.config)
-
-    # 语料（与 unified_lr_bpb 同一加载/字节口径）
-    text, _ = load_corpus(args)
-    num_bytes = len(text.encode("utf-8"))
+    rows = load_long()
     try:
-        num_tokens = len(worker._encode(text))
-    except Exception:
-        num_tokens = len(worker.tokenizer(text, add_special_tokens=False)["input_ids"])
-    print(f"[text_likelihood] corpus: {num_tokens} tokens, {num_bytes} bytes")
-
-    # 直接调 worker 自己的 loglikelihood_rolling —— 它封装了该族的 native 估计量
-    req = SimpleNamespace(args=(text,))
-    results = worker.loglikelihood_rolling([req])     # -> [total_loglik_nats]（loglik，通常为负）
-    total_ll = float(results[0])
-    total_nll = -total_ll                              # 转成 NLL（nats）
-
-    native_bpb = total_nll / (LN2 * num_bytes)
-    token_ppl = math.exp(total_nll / max(1, num_tokens))   # 近似（分母用全部 token）
-
-    result = {
-        "project": project,
-        "family": family,
-        "estimator": "native",
-        "attention_regime": f"native {family} estimator (own ELBO/chain-rule)",
-        "mc_num": int(cfg.get("mc_num", 1)),
-        "max_len": int(cfg.get("max_len", 2048)),
-        "corpus_tokens": int(num_tokens),
-        "corpus_bytes": int(num_bytes),
-        "total_nll_nats": float(total_nll),
-        "native_bpb": float(native_bpb),
-        "native_token_ppl_approx": float(token_ppl),
-        "source": args.text_file or f"{args.hf_dataset}/{args.hf_config}/{args.hf_split}",
-        "timestamp": datetime.now().isoformat(),
-    }
-
-    print("\n==================== RESULT (native) ====================")
-    print(f"  family       : {family}")
-    print(f"  native BPB   : {native_bpb:.4f}")
-    print(f"  token-PPL(~) : {token_ppl:.2f}")
-    print("=========================================================\n")
-
-    out_dir = os.path.join(cfg.get("output_path", "./output_eval"), project)
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, f"native_bpb_{datetime.now():%Y%m%dT%H%M%S}.json")
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2, ensure_ascii=False)
-    print(f"[text_likelihood] saved -> {out_path}")
+        plt, np = _setup()
+    except ImportError:
+        raise SystemExit("需要 matplotlib + numpy：pip install matplotlib numpy")
+    acc = load_downstream_acc()
+    print("estimator_bars:");  plot_estimator_bars(rows, plt, np)
+    print("parallel_tax:");    plot_parallel_tax(rows, plt, np)
+    print("bpb_vs_acc:");      plot_bpb_vs_acc(rows, acc, plt, np)
+    print(f"\n>>> 图已存到 {OUT}/")
 
 
 if __name__ == "__main__":

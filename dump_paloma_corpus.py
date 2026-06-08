@@ -15,7 +15,7 @@ import argparse, os
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--task", default="paloma_c4_en")
-    ap.add_argument("--out", default="data/paloma_c4_en_test.txt")
+    ap.add_argument("--out", default="public/dataset/paloma_c4_en_test.txt")
     ap.add_argument("--max_docs", type=int, default=1000,
                     help="最多取多少个文档（C4 很大，限量即可得稳定 BPB；0=全量）")
     args = ap.parse_args()

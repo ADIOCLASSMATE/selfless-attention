@@ -12,7 +12,8 @@ else
     CONFIG_PATH="./configs/selfless/lm_eval_selfless_${SIZE}.yaml"
     OUTPUT_NAME="selfless-${SIZE}-50BT-random+random"
 fi
-TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrande,boolq,sciq,truthfulqa_mc1,truthfulqa_mc2,gpqa_diamond_zeroshot,super-glue-lm-eval-v1,arc_challenge,paloma_c4_en,paloma_falcon-refinedweb,paloma_wikitext_103"
+# TASKS="lambada_openai,wikitext,hellaswag,copa,piqa,arc_easy,openbookqa,winogrande,boolq,sciq,truthfulqa_mc1,truthfulqa_mc2,gpqa_diamond_zeroshot,super-glue-lm-eval-v1,arc_challenge,paloma_c4_en,paloma_falcon-refinedweb,paloma_wikitext_103"
+TASKS="hellaswag,copa,piqa,arc_easy,openbookqa,winogrande,boolq,sciq,truthfulqa_mc1,truthfulqa_mc2,gpqa_diamond_zeroshot,super-glue-lm-eval-v1,arc_challenge"
 cd "$(dirname "$0")/../.."
 if [ ! -f "$CONFIG_PATH" ]; then
     echo "Missing eval config: $CONFIG_PATH" >&2

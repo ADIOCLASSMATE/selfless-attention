@@ -54,6 +54,27 @@ except ImportError:
     liger_kernel_is_available = False
     
 
+from dataclasses import dataclass
+from transformers.modeling_outputs import ModelOutput
+
+@dataclass
+class BaseModelOutputWithDualStream(ModelOutput):
+    """Like BaseModelOutputWithPast, but also returns X0 (content) stream hidden states for XLNet two-stream models."""
+    last_hidden_state: Optional[torch.FloatTensor] = None  # XT stream
+    x0_hidden_states: Optional[torch.FloatTensor] = None    # X0 stream
+
+
+@dataclass
+class CausalLMOutputWithDualStream(ModelOutput):
+    """Like CausalLMOutputWithPast, but also returns X0 (content) stream hidden states for XLNet two-stream models."""
+    xT_loss: Optional[torch.FloatTensor] = None
+    xT_logits: Optional[torch.FloatTensor] = None
+    x0_loss: Optional[torch.FloatTensor] = None
+    x0_logits: Optional[torch.FloatTensor] = None
+    xT_hidden_states: Optional[tuple[torch.FloatTensor, ...]] = None
+    x0_hidden_states: Optional[torch.FloatTensor] = None
+    
+    
 @use_kernel_forward_from_hub("RMSNorm")
 class Qwen3RMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
@@ -431,6 +452,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         use_cache: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         calculate_likelihood: Optional[bool] = None,
+        return_both_streams: Optional[bool] = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
         r"""
@@ -487,11 +509,18 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 **kwargs,
             )
 
-        if self.training or calculate_likelihood:
+        if (self.training or calculate_likelihood) and not return_both_streams:
             XT_hidden_states = self.norm(XT_hidden_states)
             return BaseModelOutputWithPast(
                 last_hidden_state=XT_hidden_states,
                 past_key_values=past_key_values if use_cache else None,
+            )
+        elif return_both_streams:
+            XT_hidden_states = self.norm(XT_hidden_states) if XT_hidden_states is not None else None
+            X0_hidden_states = self.norm(X0_hidden_states)
+            return BaseModelOutputWithDualStream(
+                last_hidden_state=XT_hidden_states,
+                x0_hidden_states=X0_hidden_states,
             )
         else:
             X0_hidden_states = self.norm(X0_hidden_states)
@@ -530,6 +559,7 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
         calculate_likelihood: bool = False,
+        return_both_streams: Optional[bool] = False,
         **kwargs: Unpack[TransformersKwargs],
     ) -> CausalLMOutputWithPast:
         r"""
@@ -549,16 +579,19 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
                 Labels for language modeling. Tokens with labels set to -100 will be ignored when computing the loss.
             calculate_likelihood (`bool`, *optional*, defaults to `False`):
                 Whether to calculate the likelihood of the input sequence. If `True`, the model will compute the likelihood using the XT stream, which is necessary for training. If `False`, the model will only compute the hidden states for the X0 stream, which can be used for efficient decoding. Note that when `calculate_likelihood` is `True`, the model will return the likelihood loss in the `loss` field of the output, and the `logits` field will contain the logits from the XT stream.
+            return_both_streams (`bool`, *optional*, defaults to `False`):
+                Whether to return hidden states for both streams. If `True`, the model will return hidden states for both the XT and X0 streams.
         ```"""
-        outputs: BaseModelOutputWithPast = self.model(
+        outputs = self.model(
             X0_input_ids=X0_input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
+            X0_inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             cache_position=cache_position,
             calculate_likelihood=calculate_likelihood,
+            return_both_streams=return_both_streams,
             **kwargs,
         )
 
@@ -571,13 +604,25 @@ class Qwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         if labels is not None:
             loss = self.loss_function(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-100)
 
-        return CausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
+        if return_both_streams:
+            x0_logits = self.lm_head(outputs.x0_hidden_states[:, slice_indices, :]) if outputs.x0_hidden_states is not None else None
+            x0_loss = self.loss_function(x0_logits.view(-1, x0_logits.size(-1)), labels.view(-1), ignore_index=-100) if (labels is not None and x0_logits is not None) else None
+            return CausalLMOutputWithDualStream(
+                xT_loss=loss,
+                xT_logits=logits,
+                x0_loss=x0_loss,
+                x0_logits=x0_logits,
+                xT_hidden_states=outputs.hidden_states,
+                x0_hidden_states=outputs.x0_hidden_states,
+            )
+        else:
+            return CausalLMOutputWithPast(
+                loss=loss,
+                logits=logits,
+                past_key_values=outputs.past_key_values,
+                hidden_states=outputs.hidden_states,
+                attentions=outputs.attentions,
+            )
         
     @torch.compile(mode="max-autotune-no-cudagraphs")
     def loss_function(self, logits, labels, ignore_index, reduction='mean'):
